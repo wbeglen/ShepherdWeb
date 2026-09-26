@@ -77,7 +77,7 @@ public class UtcDateTimeJsonConverterTests
     public async Task Write_SendsIsoUtcWithZ()
     {
         var api = new StubShepherdApi()
-            .On(HttpMethod.Post, "/api/experiment-versions", HttpStatusCode.OK, VersionJson.Replace("__DATE__", "2026-09-25T14:03:12"));
+            .On(HttpMethod.Post, "/api/experiment-versions", HttpStatusCode.Created, VersionJson.Replace("__DATE__", "2026-09-25T14:03:12"));
 
         await new ExperimentVersionsClient(api.CreateHttpClient()).ExperimentVersionsPostAsync(new CreateExperimentVersionRequest
         {

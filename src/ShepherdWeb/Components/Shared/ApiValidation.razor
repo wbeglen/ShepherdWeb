@@ -1,0 +1,68 @@
+@* Place inside an EditForm next to <DataAnnotationsValidator />. It shows ShepherdAPI's 400 validation
+   errors and 409 conflicts inside the form, beside client-side errors (docs/ARCHITECTURE.md AD-5).
+   Server messages are cleared when the operator edits the field or submits again. *@
+@implements IDisposable
+
+@code {
+    [CascadingParameter] private EditContext? CurrentEditContext { get; set; }
+
+    private EditContext? editContext;
+    private ValidationMessageStore? messages;
+
+    protected override void OnParametersSet()
+    {
+        if (CurrentEditContext is null)
+        {
+            throw new InvalidOperationException($"{nameof(ApiValidation)} must be placed inside an EditForm.");
+        }
+
+        if (!ReferenceEquals(editContext, CurrentEditContext))
+        {
+            Detach();
+            editContext = CurrentEditContext;
+            messages = new ValidationMessageStore(editContext);
+            editContext.OnValidationRequested += OnValidationRequested;
+            editContext.OnFieldChanged += OnFieldChanged;
+        }
+    }
+
+    /// <summary>
+    /// Shows <paramref name="problem"/> in the form when it belongs there (validation or conflict)
+    /// and returns true; returns false for other problems, which the page shows with ProblemDisplay.
+    /// </summary>
+    public bool TryShow(ApiProblem problem)
+    {
+        if (editContext is null || messages is null || problem.Kind is not (ApiProblemKind.Validation or ApiProblemKind.Conflict))
+        {
+            return false;
+        }
+
+        messages.Clear();
+        messages.AddApiErrors(editContext, problem);
+        return true;
+    }
+
+    private void OnValidationRequested(object? sender, ValidationRequestedEventArgs e) => messages?.Clear();
+
+    private void OnFieldChanged(object? sender, FieldChangedEventArgs e)
+    {
+        // A field-level server error no longer applies once that field is edited; a model-level one
+        // (such as a duplicate-name conflict) may be caused by any field, so edits clear it too.
+        messages?.Clear(e.FieldIdentifier);
+        if (editContext is not null)
+        {
+            messages?.Clear(new FieldIdentifier(editContext.Model, string.Empty));
+        }
+    }
+
+    private void Detach()
+    {
+        if (editContext is not null)
+        {
+            editContext.OnValidationRequested -= OnValidationRequested;
+            editContext.OnFieldChanged -= OnFieldChanged;
+        }
+    }
+
+    public void Dispose() => Detach();
+}

@@ -1,0 +1,104 @@
+@page "/reference/statuses"
+@inject ShepherdApi.IStatusesClient Statuses
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Statuses · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    <p class="small text-secondary">
+        ShepherdWeb looks up “@Conventions.Value.DraftStatusName” and “@Conventions.Value.LockedStatusName” by name
+        (configured under <code>Conventions</code>). Renaming either breaks creating or locking versions until the configuration matches.
+    </p>
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.Statuses.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="s => s.Name" Sortable="true" />
+            <PropertyColumn Property="s => s.Description" />
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add status" : "Edit status")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="mb-2"><label class="form-label" for="status-name">Name</label><InputText id="status-name" class="form-control" @bind-Value="form.Name" /></div>
+            <div class="mb-3"><label class="form-label" for="status-desc">Description</label><InputText id="status-desc" class="form-control" @bind-Value="form.Description" /></div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.StatusRequest form = new() { Name = string.Empty };
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try { await ReferenceData.EnsureLoadedAsync(); }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void StartEdit(ShepherdApi.Status s)
+    {
+        editingId = s.StatusID;
+        form = new ShepherdApi.StatusRequest { Name = s.Name ?? string.Empty, Description = s.Description };
+    }
+
+    private void Reset()
+    {
+        editingId = null;
+        form = new ShepherdApi.StatusRequest { Name = string.Empty };
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.Description = string.IsNullOrWhiteSpace(form.Description) ? null : form.Description.Trim();
+            if (editingId is { } id)
+            {
+                await Statuses.StatusesPutAsync(id, form);
+            }
+            else
+            {
+                await Statuses.StatusesPostAsync(form);
+            }
+
+            Reset();
+            await ReferenceData.RefreshAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

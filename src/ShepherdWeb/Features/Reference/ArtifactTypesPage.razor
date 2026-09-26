@@ -1,0 +1,117 @@
+@page "/reference/artifact-types"
+@inject ShepherdApi.IArtifactTypesClient ArtifactTypes
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Artifact types · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    @if (ReferenceData.FindArtifactType(Conventions.Value.DeliveredPromptArtifactTypeName) is null)
+    {
+        <div class="alert alert-info py-2 small">
+            Executions need an artifact type named “@Conventions.Value.DeliveredPromptArtifactTypeName” for delivered prompts.
+            <button class="btn btn-sm btn-link p-0 align-baseline" @onclick="PrefillDeliveredPrompt">Fill in the form for it</button>
+        </div>
+    }
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.ArtifactTypes.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="t => t.Name" Sortable="true" />
+            <PropertyColumn Property="t => t.Description" />
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add artifact type" : "Edit artifact type")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="mb-2"><label class="form-label" for="type-name">Name</label><InputText id="type-name" class="form-control" @bind-Value="form.Name" /></div>
+            <div class="mb-3"><label class="form-label" for="type-desc">Description</label><InputText id="type-desc" class="form-control" @bind-Value="form.Description" /></div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.ArtifactTypeRequest form = new() { Name = string.Empty };
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try { await ReferenceData.EnsureLoadedAsync(); }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void PrefillDeliveredPrompt()
+    {
+        editingId = null;
+        form = new ShepherdApi.ArtifactTypeRequest
+        {
+            Name = Conventions.Value.DeliveredPromptArtifactTypeName,
+            Description = "Exact prompt text delivered to an agent",
+        };
+    }
+
+    private void StartEdit(ShepherdApi.ArtifactType t)
+    {
+        editingId = t.ArtifactTypeID;
+        form = new ShepherdApi.ArtifactTypeRequest { Name = t.Name ?? string.Empty, Description = t.Description };
+    }
+
+    private void Reset()
+    {
+        editingId = null;
+        form = new ShepherdApi.ArtifactTypeRequest { Name = string.Empty };
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.Description = string.IsNullOrWhiteSpace(form.Description) ? null : form.Description.Trim();
+            if (editingId is { } id)
+            {
+                await ArtifactTypes.ArtifactTypesPutAsync(id, form);
+            }
+            else
+            {
+                await ArtifactTypes.ArtifactTypesPostAsync(form);
+            }
+
+            Reset();
+            await ReferenceData.RefreshAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

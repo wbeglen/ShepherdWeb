@@ -1,0 +1,124 @@
+@page "/reference/agents"
+@inject ShepherdApi.IAgentsClient Agents
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<PageTitle>Agents · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.Agents.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="a => a.Name" Sortable="true" />
+            <PropertyColumn Property="a => a.Provider" Sortable="true" />
+            <PropertyColumn Property="a => a.DefaultModel" Title="Default model" />
+            <PropertyColumn Property="a => a.DefaultInterface" Title="Default interface" />
+            <TemplateColumn Title="Active">@(context.Active ? "yes" : "no")</TemplateColumn>
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add agent" : "Edit agent")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="row g-2 mb-2">
+                <div class="col-6"><label class="form-label" for="agent-name">Name</label><InputText id="agent-name" class="form-control" @bind-Value="form.Name" /></div>
+                <div class="col-6"><label class="form-label" for="agent-provider">Provider</label><InputText id="agent-provider" class="form-control" @bind-Value="form.Provider" /></div>
+            </div>
+            <div class="row g-2 mb-2">
+                <div class="col-6"><label class="form-label" for="agent-model">Default model</label><InputText id="agent-model" class="form-control" @bind-Value="form.DefaultModel" /></div>
+                <div class="col-6"><label class="form-label" for="agent-interface">Default interface</label><InputText id="agent-interface" class="form-control" @bind-Value="form.DefaultInterface" /></div>
+            </div>
+            <div class="form-check mb-3">
+                <InputCheckbox id="agent-active" class="form-check-input" @bind-Value="form.Active" />
+                <label class="form-check-label" for="agent-active">Active (offered when starting executions)</label>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.AgentRequest form = NewForm();
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    // The generated request defaults Active to false; ShepherdAPI's own default is true.
+    private static ShepherdApi.AgentRequest NewForm() => new()
+    {
+        Name = string.Empty, Provider = string.Empty, DefaultModel = string.Empty, DefaultInterface = string.Empty, Active = true,
+    };
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try { await ReferenceData.EnsureLoadedAsync(); }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void StartEdit(ShepherdApi.Agent a)
+    {
+        editingId = a.AgentID;
+        form = new ShepherdApi.AgentRequest
+        {
+            Name = a.Name ?? string.Empty, Provider = a.Provider ?? string.Empty,
+            DefaultModel = a.DefaultModel ?? string.Empty, DefaultInterface = a.DefaultInterface ?? string.Empty, Active = a.Active,
+        };
+    }
+
+    private void Reset()
+    {
+        editingId = null;
+        form = NewForm();
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.Provider = form.Provider.Trim();
+            form.DefaultModel = form.DefaultModel.Trim();
+            form.DefaultInterface = form.DefaultInterface.Trim();
+            if (editingId is { } id)
+            {
+                await Agents.AgentsPutAsync(id, form);
+            }
+            else
+            {
+                await Agents.AgentsPostAsync(form);
+            }
+
+            Reset();
+            await ReferenceData.RefreshAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

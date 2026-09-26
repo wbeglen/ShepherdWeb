@@ -1,0 +1,112 @@
+@page "/reference/phases"
+@inject ShepherdApi.IPhasesClient Phases
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<PageTitle>Phases · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.Phases.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="p => p.Sequence" Sortable="true" IsDefaultSortColumn="true" />
+            <PropertyColumn Property="p => p.Name" Sortable="true" />
+            <PropertyColumn Property="p => p.Description" />
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add phase" : "Edit phase")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="row g-2 mb-2">
+                <div class="col-3"><label class="form-label" for="phase-seq">Sequence</label><InputNumber id="phase-seq" class="form-control" @bind-Value="form.Sequence" /></div>
+                <div class="col-9"><label class="form-label" for="phase-name">Name</label><InputText id="phase-name" class="form-control" @bind-Value="form.Name" /></div>
+            </div>
+            <div class="mb-3"><label class="form-label" for="phase-desc">Description</label><InputText id="phase-desc" class="form-control" @bind-Value="form.Description" /></div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.PhaseRequest form = new() { Name = string.Empty };
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            await ReferenceData.EnsureLoadedAsync();
+            Reset();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void StartEdit(ShepherdApi.Phase p)
+    {
+        editingId = p.PhaseID;
+        form = new ShepherdApi.PhaseRequest { Name = p.Name ?? string.Empty, Sequence = p.Sequence, Description = p.Description };
+    }
+
+    // Suggests the next sequence number (brief §7.1); Sequence is unique.
+    private void Reset()
+    {
+        editingId = null;
+        form = new ShepherdApi.PhaseRequest
+        {
+            Name = string.Empty,
+            Sequence = ReferenceData.Phases.Select(p => p.Sequence).DefaultIfEmpty(0).Max() + 1,
+        };
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.Description = string.IsNullOrWhiteSpace(form.Description) ? null : form.Description.Trim();
+            if (editingId is { } id)
+            {
+                await Phases.PhasesPutAsync(id, form);
+            }
+            else
+            {
+                await Phases.PhasesPostAsync(form);
+            }
+
+            await ReferenceData.RefreshAsync();
+            Reset();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

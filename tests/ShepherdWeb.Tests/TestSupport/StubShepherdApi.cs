@@ -79,9 +79,11 @@ public sealed class StubShepherdApi : HttpMessageHandler
             throw new HttpRequestException("No connection could be made because the target machine actively refused it.");
         }
 
-        return _routes.TryGetValue(Key(request.Method, path), out var respond)
+        var response = _routes.TryGetValue(Key(request.Method, path), out var respond)
             ? respond(request)
             : throw new InvalidOperationException($"Unexpected request: {request.Method} {path}");
+        response.RequestMessage = request; // As the real socket handler does.
+        return response;
     }
 
     private static string Key(HttpMethod method, string path) => $"{method.Method} {path}";

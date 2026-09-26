@@ -1,0 +1,107 @@
+@page "/reference/score-categories"
+@inject ShepherdApi.IScoreCategoriesClient ScoreCategories
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<PageTitle>Score categories · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.ScoreCategories.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="c => c.Name" Sortable="true" />
+            <PropertyColumn Property="c => c.Description" />
+            <TemplateColumn Title="Better">@(context.HigherIsBetter ? "higher" : "lower")</TemplateColumn>
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add score category" : "Edit score category")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="mb-2"><label class="form-label" for="cat-name">Name</label><InputText id="cat-name" class="form-control" @bind-Value="form.Name" /></div>
+            <div class="mb-2"><label class="form-label" for="cat-desc">Description</label><InputText id="cat-desc" class="form-control" @bind-Value="form.Description" /></div>
+            <div class="form-check mb-3">
+                <InputCheckbox id="cat-higher" class="form-check-input" @bind-Value="form.HigherIsBetter" />
+                <label class="form-check-label" for="cat-higher">Higher scores are better</label>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.ScoreCategoryRequest form = NewForm();
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    // The generated request defaults HigherIsBetter to false; ShepherdAPI's own default is true.
+    private static ShepherdApi.ScoreCategoryRequest NewForm() => new() { Name = string.Empty, HigherIsBetter = true };
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try { await ReferenceData.EnsureLoadedAsync(); }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void StartEdit(ShepherdApi.ScoreCategory c)
+    {
+        editingId = c.ScoreCategoryID;
+        form = new ShepherdApi.ScoreCategoryRequest { Name = c.Name ?? string.Empty, Description = c.Description, HigherIsBetter = c.HigherIsBetter };
+    }
+
+    private void Reset()
+    {
+        editingId = null;
+        form = NewForm();
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.Description = string.IsNullOrWhiteSpace(form.Description) ? null : form.Description.Trim();
+            if (editingId is { } id)
+            {
+                await ScoreCategories.ScoreCategoriesPutAsync(id, form);
+            }
+            else
+            {
+                await ScoreCategories.ScoreCategoriesPostAsync(form);
+            }
+
+            Reset();
+            await ReferenceData.RefreshAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

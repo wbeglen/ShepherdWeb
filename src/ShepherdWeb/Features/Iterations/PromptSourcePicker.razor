@@ -1,0 +1,112 @@
+@* "Start from another iteration's prompt" (docs/ARCHITECTURE.md AD-12): copies text from any
+   iteration of any version into the editor. The copy is plain text; no link between the
+   iterations is recorded (lineage is TBD, N5). *@
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ShepherdApi.IIterationsClient Iterations
+@inject ApiErrorMapper Errors
+
+<div class="mb-2">
+    <button type="button" class="btn btn-link btn-sm p-0" aria-expanded="@open" @onclick="ToggleAsync">
+        @(open ? "Hide other prompts" : "Start from another iteration's prompt…")
+    </button>
+</div>
+@if (open)
+{
+    <div class="border rounded p-3 mb-3">
+        <ProblemDisplay Problem="problem" />
+
+        @if (versions is not null)
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-md-6">
+                    <label class="form-label small" for="source-version">Version</label>
+                    <select id="source-version" class="form-select form-select-sm" value="@selectedVersionId" @onchange="OnVersionChangedAsync">
+                        @foreach (var v in versions)
+                        {
+                            <option value="@v.ExperimentVersionID">@v.Name @v.VersionLabel</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label small" for="source-iteration">Iteration</label>
+                    <select id="source-iteration" class="form-select form-select-sm" @bind="selectedIterationId">
+                        <option value="0">Choose…</option>
+                        @foreach (var i in iterations.Where(i => i.IterationID != ExcludeIterationId))
+                        {
+                            <option value="@i.IterationID">@i.Sequence. @i.IterationLabel</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            @if (Selected is { } source)
+            {
+                <pre class="prompt-view prompt-preview">@source.Prompt</pre>
+                <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => OnPick.InvokeAsync(source.Prompt ?? string.Empty)">
+                    Use this prompt
+                </button>
+            }
+        }
+        else if (problem is null)
+        {
+            <p class="small mb-0">Loading…</p>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public long CurrentVersionId { get; set; }
+
+    /// <summary>The iteration being edited, which is not offered as its own source.</summary>
+    [Parameter] public long? ExcludeIterationId { get; set; }
+
+    [Parameter] public EventCallback<string> OnPick { get; set; }
+
+    private IReadOnlyList<ShepherdApi.ExperimentVersion>? versions;
+    private IReadOnlyList<ShepherdApi.Iteration> iterations = [];
+    private long selectedVersionId;
+    private long selectedIterationId;
+    private ApiProblem? problem;
+
+    private ShepherdApi.Iteration? Selected => iterations.FirstOrDefault(i => i.IterationID == selectedIterationId);
+
+    private bool open;
+
+    // Loads only when first opened; most edits never use it.
+    private async Task ToggleAsync()
+    {
+        open = !open;
+        if (!open || versions is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            versions = await Versions.ExperimentVersionsGetAsync();
+            await SelectVersionAsync(CurrentVersionId);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private Task OnVersionChangedAsync(ChangeEventArgs e) =>
+        long.TryParse(e.Value?.ToString(), out var id) ? SelectVersionAsync(id) : Task.CompletedTask;
+
+    private async Task SelectVersionAsync(long versionId)
+    {
+        selectedVersionId = versionId;
+        selectedIterationId = 0;
+        problem = null;
+        try
+        {
+            iterations = await Iterations.IterationsGetAsync(experimentVersionId: versionId);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+}

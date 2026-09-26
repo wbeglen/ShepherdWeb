@@ -1,0 +1,181 @@
+@* The Parameters tab of a version. One form below the table either adds a parameter or edits the
+   selected one. A parameter's Name cannot change after creation (the contract has no rename);
+   renaming means delete and re-create while the version is a draft. *@
+@inject ShepherdApi.IParametersClient Parameters
+@inject ApiErrorMapper Errors
+
+<ProblemDisplay Problem="problem" />
+
+@if (Configuration.Parameters.Count == 0)
+{
+    <p class="text-secondary">No parameters yet.</p>
+}
+else
+{
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr><th>Name</th><th>Value</th><th>Unit</th><th>Notes</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var p in Configuration.Parameters)
+            {
+                <tr class="@(editing?.ParameterID == p.ParameterID ? "table-active" : null)">
+                    <td>@p.Name</td>
+                    <td>@p.Value</td>
+                    <td>@p.Unit</td>
+                    <td class="text-prewrap small">@p.Notes</td>
+                    <td class="text-end text-nowrap">
+                        @if (!locked)
+                        {
+                            <button class="btn btn-sm btn-link" @onclick="() => StartEdit(p)">Edit</button>
+                            <button class="btn btn-sm btn-link text-danger" @onclick="() => deleting = p">Delete</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (!locked)
+{
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editing is null ? "Add parameter" : $"Edit parameter “{editing.Name}”")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+
+            @if (editing is null)
+            {
+                <div class="mb-2">
+                    <label class="form-label" for="param-name">Name</label>
+                    <InputText id="param-name" class="form-control" @bind-Value="form.Name" />
+                </div>
+            }
+            <div class="row g-2 mb-2">
+                <div class="col-8">
+                    <label class="form-label" for="param-value">Value</label>
+                    <InputText id="param-value" class="form-control" @bind-Value="form.Value" />
+                </div>
+                <div class="col-4">
+                    <label class="form-label" for="param-unit">Unit</label>
+                    <InputText id="param-unit" class="form-control" @bind-Value="form.Unit" />
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="param-notes">Notes</label>
+                <InputTextArea id="param-notes" class="form-control" rows="2" @bind-Value="form.Notes" />
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editing is null ? "Add" : "Save")</button>
+            @if (editing is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+
+    <ConfirmDialog Visible="deleting is not null" Title="Delete parameter?" ConfirmText="Delete" ConfirmClass="btn-danger"
+                   Busy="saving" OnConfirm="DeleteAsync" OnCancel="() => deleting = null">
+        “@deleting?.Name” will be removed from this draft version.
+    </ConfirmDialog>
+}
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    // One form model for both add and edit: CreateParameterRequest carries the same annotated fields
+    // as UpdateParameterRequest plus Name, which is shown only when adding.
+    private ShepherdApi.CreateParameterRequest form = NewForm();
+    private ShepherdApi.Parameter? editing;
+    private ShepherdApi.Parameter? deleting;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    private bool locked => Configuration.IsConfigurationFrozen;
+
+    private static ShepherdApi.CreateParameterRequest NewForm() => new() { Name = string.Empty };
+
+    private void StartEdit(ShepherdApi.Parameter p)
+    {
+        editing = p;
+        form = new ShepherdApi.CreateParameterRequest { Name = p.Name ?? string.Empty, Value = p.Value, Unit = p.Unit, Notes = p.Notes };
+    }
+
+    private void Reset()
+    {
+        editing = null;
+        form = NewForm();
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            if (editing is null)
+            {
+                form.ExperimentVersionID = Configuration.Version.ExperimentVersionID;
+                form.Name = form.Name.Trim();
+                await Parameters.ParametersPostAsync(Normalize(form));
+            }
+            else
+            {
+                var update = Normalize(form);
+                await Parameters.ParametersPutAsync(editing.ParameterID,
+                    new ShepherdApi.UpdateParameterRequest { Value = update.Value, Unit = update.Unit, Notes = update.Notes });
+            }
+
+            Reset();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            await Parameters.ParametersDeleteAsync(deleting!.ParameterID);
+            if (editing?.ParameterID == deleting.ParameterID)
+            {
+                Reset();
+            }
+
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            saving = false;
+            deleting = null;
+        }
+    }
+
+    private static ShepherdApi.CreateParameterRequest Normalize(ShepherdApi.CreateParameterRequest f)
+    {
+        f.Value = string.IsNullOrWhiteSpace(f.Value) ? null : f.Value.Trim();
+        f.Unit = string.IsNullOrWhiteSpace(f.Unit) ? null : f.Unit.Trim();
+        f.Notes = string.IsNullOrWhiteSpace(f.Notes) ? null : f.Notes;
+        return f;
+    }
+}

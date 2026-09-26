@@ -1,0 +1,41 @@
+@* The prompt editor (docs/ARCHITECTURE.md AD-12): a monospace textarea with live character, line and
+   byte counts and the live SHA-256 of the exact UTF-8 bytes.
+   Blazor note: deriving from InputBase<string> makes this a first-class form input. Setting
+   CurrentValueAsString raises ValueChanged and tells the EditContext the field changed, so validation
+   messages, the "modified"/"invalid" CSS classes and @bind-Value all work as with InputTextArea.
+   Unlike InputTextArea, it updates on every keystroke (oninput) so the counts stay live. *@
+@inherits InputBase<string>
+
+<textarea @attributes="AdditionalAttributes" class="form-control prompt-editor @CssClass" rows="@Rows"
+          spellcheck="false" value="@CurrentValue" @oninput="OnInput"></textarea>
+<div class="small text-secondary mt-1" aria-live="polite">
+    @stats.CharacterCount characters · @stats.LineCount lines · @stats.ByteCount bytes (UTF-8) ·
+    SHA-256 <Sha256Display Value="@stats.Sha256" />
+</div>
+
+@code {
+    [Parameter] public int Rows { get; set; } = 18;
+
+    private PromptText stats = new(string.Empty);
+
+    protected override void OnParametersSet()
+    {
+        base.OnParametersSet();
+        stats = new PromptText(CurrentValue);
+    }
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        CurrentValueAsString = e.Value?.ToString();
+        stats = new PromptText(CurrentValue);
+    }
+
+    // Any text is a valid prompt at this level; [Required] on the model rejects empty ones.
+    protected override bool TryParseValueFromString(string? value, out string result,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? validationErrorMessage)
+    {
+        result = value ?? string.Empty;
+        validationErrorMessage = null;
+        return true;
+    }
+}

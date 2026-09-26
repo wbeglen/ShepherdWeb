@@ -1,0 +1,30 @@
+@* Heading, tabs and the retroactivity warning shared by the reference-data pages. *@
+
+<h1 class="h3">Reference data</h1>
+<ul class="nav nav-tabs mb-3">
+    @foreach (var (href, label) in Pages)
+    {
+        <li class="nav-item">
+            <NavLink class="nav-link" href="@href" Match="NavLinkMatch.All">@label</NavLink>
+        </li>
+    }
+</ul>
+
+@* Owner decision N4: a permanent warning is enough for the MVP (finding F7). *@
+<div class="alert alert-warning py-2 small" role="note">
+    Reference data is shared by every experiment version and is not versioned. A change here applies
+    retroactively everywhere it is used, <strong>including locked versions</strong>. Correct mistakes, but don't
+    change the meaning of a row that is already in use; add a new row instead.
+</div>
+
+@code {
+    private static readonly (string Href, string Label)[] Pages =
+    [
+        ("reference/agents", "Agents"),
+        ("reference/phases", "Phases"),
+        ("reference/score-categories", "Score categories"),
+        ("reference/raters", "Raters"),
+        ("reference/statuses", "Statuses"),
+        ("reference/artifact-types", "Artifact types"),
+    ];
+}

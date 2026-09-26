@@ -1,0 +1,112 @@
+@page "/reference/raters"
+@inject ShepherdApi.IRatersClient Raters
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<PageTitle>Raters · ShepherdWeb</PageTitle>
+
+<ReferenceNav />
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ReferenceData.IsLoaded)
+{
+    <div class="mb-4">
+        <QuickGrid Items="ReferenceData.Raters.AsQueryable()" Class="table table-sm align-middle">
+            <PropertyColumn Property="r => r.Name" Sortable="true" />
+            <PropertyColumn Property="r => r.RaterType" Title="Type" Sortable="true" />
+            <TemplateColumn Title="Agent">@(context.AgentID is { } agentId ? ReferenceData.AgentName(agentId) : "")</TemplateColumn>
+            <TemplateColumn><button class="btn btn-sm btn-link" @onclick="() => StartEdit(context)">Edit</button></TemplateColumn>
+        </QuickGrid>
+    </div>
+
+    <section class="border rounded p-3 form-narrow">
+        <h2 class="h6">@(editingId is null ? "Add rater" : "Edit rater")</h2>
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+            <div class="row g-2 mb-2">
+                <div class="col-6"><label class="form-label" for="rater-name">Name</label><InputText id="rater-name" class="form-control" @bind-Value="form.Name" /></div>
+                <div class="col-6"><label class="form-label" for="rater-type">Type <span class="text-secondary">(optional)</span></label><InputText id="rater-type" class="form-control" @bind-Value="form.RaterType" /></div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="rater-agent">Agent <span class="text-secondary">(optional, for a rater that is an agent)</span></label>
+                <InputSelect id="rater-agent" class="form-select" @bind-Value="form.AgentID">
+                    <option value="">None</option>
+                    @foreach (var agent in ReferenceData.Agents)
+                    {
+                        <option value="@agent.AgentID">@agent.Name</option>
+                    }
+                </InputSelect>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">@(editingId is null ? "Add" : "Save")</button>
+            @if (editingId is not null)
+            {
+                <button type="button" class="btn btn-link btn-sm" @onclick="Reset">Cancel</button>
+            }
+        </EditForm>
+    </section>
+}
+
+@code {
+    private ShepherdApi.RaterRequest form = new() { Name = string.Empty };
+    private int? editingId;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try { await ReferenceData.EnsureLoadedAsync(); }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex)) { problem = Errors.Map(ex); }
+    }
+
+    private void StartEdit(ShepherdApi.Rater r)
+    {
+        editingId = r.RaterID;
+        form = new ShepherdApi.RaterRequest { Name = r.Name ?? string.Empty, RaterType = r.RaterType, AgentID = r.AgentID };
+    }
+
+    private void Reset()
+    {
+        editingId = null;
+        form = new ShepherdApi.RaterRequest { Name = string.Empty };
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.RaterType = string.IsNullOrWhiteSpace(form.RaterType) ? null : form.RaterType.Trim();
+            if (editingId is { } id)
+            {
+                await Raters.RatersPutAsync(id, form);
+            }
+            else
+            {
+                await Raters.RatersPostAsync(form);
+            }
+
+            Reset();
+            await ReferenceData.RefreshAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

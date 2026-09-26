@@ -1,0 +1,42 @@
+@* A modal confirmation for irreversible or consequential actions (docs/ARCHITECTURE.md AD-7).
+   Bootstrap's modal markup, shown and hidden by Blazor state, with no Bootstrap JavaScript. The body
+   (ChildContent) should say exactly what will happen. *@
+
+@if (Visible)
+{
+    <div class="modal d-block" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+        <div class="modal-dialog modal-dialog-scrollable" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h5" id="confirm-dialog-title">@Title</h2>
+                </div>
+                <div class="modal-body">
+                    @ChildContent
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" disabled="@Busy" @onclick="OnCancel">Cancel</button>
+                    <button type="button" class="btn @ConfirmClass" disabled="@Busy" @onclick="OnConfirm">
+                        @(Busy ? "Working…" : ConfirmText)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-backdrop show"></div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public string ConfirmText { get; set; } = "Confirm";
+
+    /// <summary>Bootstrap button class; use "btn-danger" for irreversible actions.</summary>
+    [Parameter] public string ConfirmClass { get; set; } = "btn-primary";
+
+    /// <summary>True while the confirmed action runs; disables both buttons.</summary>
+    [Parameter] public bool Busy { get; set; }
+
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+}

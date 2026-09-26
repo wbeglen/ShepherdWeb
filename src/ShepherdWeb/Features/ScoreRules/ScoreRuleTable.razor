@@ -1,0 +1,227 @@
+@* The Score rules tab of a version: rules grouped by phase, in phase order. Rules are add/retire only
+   (ShepherdAPI has no update). ScoreRule.Active is not shown or used (owner decision N2), and no weight
+   totals are computed (N3). *@
+@inject ShepherdApi.IScoreRulesClient ScoreRules
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<ProblemDisplay Problem="problem" />
+
+@if (Configuration.ScoreRules.Count == 0)
+{
+    <p class="text-secondary">No score rules yet.</p>
+}
+
+@foreach (var group in Groups())
+{
+    <h2 class="h6 mt-3">@group.PhaseName</h2>
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr>
+                <th>Category</th><th>Better</th><th class="text-end">Weight %</th><th class="text-end">Min</th><th class="text-end">Max</th><th>Notes</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var rule in group.Rules)
+            {
+                <tr>
+                    <td>@ReferenceData.ScoreCategoryName(rule.ScoreCategoryID)</td>
+                    <td>@Better(rule.ScoreCategoryID)</td>
+                    <td class="text-end">@rule.WeightPercent.ToString("0.##")</td>
+                    <td class="text-end">@rule.MinScore</td>
+                    <td class="text-end">@rule.MaxScore</td>
+                    <td class="small">@rule.RuleNotes</td>
+                    <td class="text-end">
+                        @if (!locked)
+                        {
+                            <button class="btn btn-sm btn-link text-danger" @onclick="() => retiring = rule">Retire</button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (!locked)
+{
+    <section class="border rounded p-3 mt-3 form-narrow">
+        <h2 class="h6">Add score rule</h2>
+        <EditForm Model="form" OnValidSubmit="AddAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+
+            <div class="row g-2 mb-2">
+                <div class="col-6">
+                    <label class="form-label" for="rule-phase">Phase</label>
+                    <InputSelect id="rule-phase" class="form-select" @bind-Value="form.PhaseID">
+                        <option value="0">Choose…</option>
+                        @foreach (var phase in ReferenceData.Phases)
+                        {
+                            <option value="@phase.PhaseID">@phase.Name</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="col-6">
+                    <label class="form-label" for="rule-category">Category</label>
+                    <InputSelect id="rule-category" class="form-select" @bind-Value="form.ScoreCategoryID">
+                        <option value="0">Choose…</option>
+                        @foreach (var category in ReferenceData.ScoreCategories)
+                        {
+                            var taken = form.ExistingPairs.Contains((form.PhaseID, category.ScoreCategoryID));
+                            <option value="@category.ScoreCategoryID" disabled="@taken">
+                                @category.Name (@(category.HigherIsBetter ? "higher" : "lower") is better)@(taken ? " · already has a rule" : "")
+                            </option>
+                        }
+                    </InputSelect>
+                </div>
+            </div>
+            <div class="row g-2 mb-2">
+                <div class="col-4">
+                    <label class="form-label" for="rule-weight">Weight %</label>
+                    <InputNumber id="rule-weight" class="form-control" step="0.01" @bind-Value="form.WeightPercent" />
+                </div>
+                <div class="col-4">
+                    <label class="form-label" for="rule-min">Min score</label>
+                    <InputNumber id="rule-min" class="form-control" @bind-Value="form.MinScore" />
+                </div>
+                <div class="col-4">
+                    <label class="form-label" for="rule-max">Max score</label>
+                    <InputNumber id="rule-max" class="form-control" @bind-Value="form.MaxScore" />
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="rule-notes">Notes</label>
+                <InputText id="rule-notes" class="form-control" @bind-Value="form.RuleNotes" />
+            </div>
+            <div class="form-text mb-2">
+                Rules cannot be edited. A mistaken rule can only be retired, and its phase and category cannot then
+                be given a new rule in this version.
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" disabled="@saving">Add rule</button>
+        </EditForm>
+    </section>
+
+    <ConfirmDialog Visible="retiring is not null" Title="Retire score rule?" ConfirmText="Retire" ConfirmClass="btn-danger"
+                   Busy="saving" OnConfirm="RetireAsync" OnCancel="() => retiring = null">
+        @if (retiring is not null)
+        {
+            <p>
+                <strong>@ReferenceData.PhaseName(retiring.PhaseID) · @ReferenceData.ScoreCategoryName(retiring.ScoreCategoryID)</strong>
+                will be retired.
+            </p>
+            <p class="mb-0">
+                <strong>This phase and category cannot be given a new rule in this version.</strong>
+                ShepherdAPI keeps retired rules, and the database allows only one rule per phase and category.
+            </p>
+        }
+    </ConfirmDialog>
+}
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private ScoreRuleForm form = new();
+    private ShepherdApi.ScoreRule? retiring;
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    private bool locked => Configuration.IsConfigurationFrozen;
+
+    private VersionConfiguration? formBuiltFor;
+
+    // Blazor note: OnParametersSet runs on every parent render, and a complex-typed parameter always
+    // counts as changed. Rebuild the form only when the parent has actually reloaded the configuration,
+    // so a half-filled form survives unrelated re-renders.
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(formBuiltFor, Configuration))
+        {
+            return;
+        }
+
+        formBuiltFor = Configuration;
+
+        // Retired rules also occupy their pair (F2), but GET /score-rules returns only non-retired
+        // rules, so ShepherdAPI's 409 remains the backstop for pairs retired earlier.
+        form = new ScoreRuleForm
+        {
+            ExistingPairs = Configuration.ScoreRules.Select(r => (r.PhaseID, r.ScoreCategoryID)).ToHashSet(),
+            MinScore = 0,
+            MaxScore = 5,
+        };
+    }
+
+    private IEnumerable<(string PhaseName, List<ShepherdApi.ScoreRule> Rules)> Groups()
+    {
+        var phaseOrder = ReferenceData.Phases.Select((p, index) => (p.PhaseID, index)).ToDictionary(x => x.PhaseID, x => x.index);
+        return Configuration.ScoreRules
+            .GroupBy(r => r.PhaseID)
+            .OrderBy(g => phaseOrder.GetValueOrDefault(g.Key, int.MaxValue))
+            .Select(g => (ReferenceData.PhaseName(g.Key), g.ToList()));
+    }
+
+    private string Better(int scoreCategoryId) =>
+        ReferenceData.ScoreCategories.FirstOrDefault(c => c.ScoreCategoryID == scoreCategoryId)?.HigherIsBetter switch
+        {
+            true => "higher",
+            false => "lower",
+            null => "?",
+        };
+
+    private async Task AddAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            await ScoreRules.ScoreRulesPostAsync(form.ToRequest(Configuration.Version.ExperimentVersionID));
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (mapped.Kind == ApiProblemKind.Conflict)
+            {
+                // Most likely a pair whose rule was retired earlier (not visible in the list, F2).
+                mapped = mapped with
+                {
+                    Detail = "This phase and category already have a rule in this version, possibly one that was retired. " +
+                             "Retired rules keep their phase and category.",
+                };
+            }
+
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task RetireAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            await ScoreRules.ScoreRulesDeleteAsync(retiring!.ScoreRuleID);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            saving = false;
+            retiring = null;
+        }
+    }
+}

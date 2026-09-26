@@ -1,0 +1,64 @@
+@* Title, status and lock state shown at the top of every page about one version. *@
+@inject ReferenceData ReferenceData
+@inject IOptions<ConventionsOptions> Conventions
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb small mb-1">
+        <li class="breadcrumb-item"><a href="experiments">Experiments</a></li>
+        <li class="breadcrumb-item">@Version.Name</li>
+        @if (Current is null)
+        {
+            <li class="breadcrumb-item active" aria-current="page">@Version.VersionLabel</li>
+        }
+        else
+        {
+            <li class="breadcrumb-item"><a href="versions/@Version.ExperimentVersionID">@Version.VersionLabel</a></li>
+            <li class="breadcrumb-item active" aria-current="page">@Current</li>
+        }
+    </ol>
+</nav>
+
+<div class="d-flex flex-wrap align-items-baseline gap-2 mb-2">
+    <h1 class="h3 mb-0">@Version.Name <span class="text-secondary">@Version.VersionLabel</span></h1>
+    <span class="badge @(VersionLifecycle.IsLocked(Version) ? "text-bg-secondary" : "text-bg-info")">@statusName</span>
+</div>
+
+@if (VersionLifecycle.IsLocked(Version))
+{
+    <div class="alert alert-secondary py-2" role="status">
+        🔒 Configuration locked at <UtcTimestamp Value="Version.LockedUTC" />. It can no longer be changed.
+    </div>
+}
+
+@if (!VersionLifecycle.IsLocked(Version) && ExecutionCount > 0)
+{
+    <div class="alert alert-warning py-2" role="alert">
+        ⚠ This version has @ExecutionCount execution@(ExecutionCount == 1 ? "" : "s") but is not locked. Its configuration is
+        shown read-only, because changing it would change what those executions appear to have used. Lock it to make
+        that permanent.
+    </div>
+}
+
+@if (mismatch is not null)
+{
+    <div class="alert alert-warning py-2" role="alert">⚠ @mismatch</div>
+}
+
+@code {
+    [Parameter, EditorRequired] public ShepherdApi.ExperimentVersion Version { get; set; } = default!;
+
+    /// <summary>Executions recorded against this version (see VersionConfiguration.ExecutionCount).</summary>
+    [Parameter] public int ExecutionCount { get; set; }
+
+    /// <summary>Name of the sub-page, for the breadcrumb (null on the version page itself).</summary>
+    [Parameter] public string? Current { get; set; }
+
+    private string statusName = string.Empty;
+    private string? mismatch;
+
+    protected override void OnParametersSet()
+    {
+        statusName = ReferenceData.StatusName(Version.StatusID);
+        mismatch = VersionLifecycle.StatusMismatch(Version, statusName, Conventions.Value);
+    }
+}

@@ -1,0 +1,345 @@
+@page "/versions/{VersionId:long}/iterations/new"
+@page "/versions/{VersionId:long}/iterations/{IterationId:long}"
+@implements IDisposable
+@inject VersionConfigurationLoader Loader
+@inject ShepherdApi.IIterationsClient Iterations
+@inject ReferenceData ReferenceData
+@inject IDraftStore Drafts
+@inject ApiErrorMapper Errors
+@inject NavigationManager Navigation
+
+<PageTitle>@(IterationId is null ? "New iteration" : "Iteration") · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (configuration is { } config && loaded)
+{
+    <VersionHeader Version="config.Version" ExecutionCount="config.ExecutionCount" Current="@(IterationId is null ? "New iteration" : $"Iteration {saved?.Sequence}")" />
+
+    @if (justSaved)
+    {
+        <div class="alert alert-success py-2" role="status">Saved.</div>
+    }
+
+    @if (config.IsConfigurationFrozen && saved is not null)
+    {
+        @* Frozen (locked, or already used by executions): the record as it is, read-only. *@
+        var prompt = new PromptText(saved.Prompt);
+        <dl class="row">
+            <dt class="col-sm-2">Sequence</dt><dd class="col-sm-10">@saved.Sequence</dd>
+            <dt class="col-sm-2">Label</dt><dd class="col-sm-10">@saved.IterationLabel</dd>
+            <dt class="col-sm-2">Scenario</dt><dd class="col-sm-10">@saved.Scenario</dd>
+            <dt class="col-sm-2">Notes</dt><dd class="col-sm-10 text-prewrap">@saved.Notes</dd>
+        </dl>
+        <h2 class="h6">Prompt</h2>
+        <pre class="prompt-view">@saved.Prompt</pre>
+        <div class="small text-secondary">
+            @prompt.CharacterCount characters · @prompt.LineCount lines · @prompt.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@prompt.Sha256" />
+        </div>
+    }
+    else if (config.IsConfigurationFrozen)
+    {
+        <p>This version's configuration is frozen; no iterations can be added. <a href="versions/@VersionId?tab=iterations">Back to iterations</a></p>
+    }
+    else
+    {
+        <NavigationLock ConfirmExternalNavigation="IsDirty" />
+
+        <DraftRestoreBar Draft="offeredDraft" What="prompt text" OnRestore="RestoreDraft" OnDiscard="DiscardDraftAsync" />
+
+        <EditForm Model="form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+
+            <div class="row g-3 mb-3">
+                <div class="col-sm-2">
+                    <label class="form-label" for="sequence">Sequence</label>
+                    <InputNumber id="sequence" class="form-control" @bind-Value="form.Sequence" />
+                </div>
+                <div class="col-sm-5">
+                    <label class="form-label" for="label">Label</label>
+                    <InputText id="label" class="form-control" @bind-Value="form.IterationLabel" />
+                </div>
+                <div class="col-sm-5">
+                    <label class="form-label" for="scenario">Scenario <span class="text-secondary">(optional)</span></label>
+                    <InputText id="scenario" class="form-control" @bind-Value="form.Scenario" />
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label" for="prompt">Prompt</label>
+                <PromptSourcePicker CurrentVersionId="VersionId" ExcludeIterationId="IterationId" OnPick="UseSourcePrompt" />
+                <PromptEditor id="prompt" @bind-Value="form.Prompt" @bind-Value:after="OnPromptEdited" />
+                <div class="form-text">
+                    This exact text is what executions will receive. After the version is locked, it cannot change.
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label" for="notes">Notes <span class="text-secondary">(optional)</span></label>
+                <InputTextArea id="notes" class="form-control" rows="3" @bind-Value="form.Notes" />
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary" disabled="@saving">@(IterationId is null ? "Create iteration" : "Save")</button>
+                <a class="btn btn-link" href="versions/@VersionId?tab=iterations">Back to iterations</a>
+                @if (IterationId is not null)
+                {
+                    <button type="button" class="btn btn-outline-danger ms-auto" @onclick="() => confirmingDelete = true">Delete iteration…</button>
+                }
+            </div>
+        </EditForm>
+
+        <ConfirmDialog Visible="confirmingReplace" Title="Replace the prompt?" ConfirmText="Replace"
+                       OnConfirm="ConfirmReplace" OnCancel="() => confirmingReplace = false">
+            The editor already contains text. It will be replaced by the selected iteration's prompt.
+        </ConfirmDialog>
+
+        <ConfirmDialog Visible="confirmingDelete" Title="Delete this iteration?" ConfirmText="Delete" ConfirmClass="btn-danger"
+                       Busy="saving" OnConfirm="DeleteAsync" OnCancel="() => confirmingDelete = false">
+            <strong>@saved?.Sequence. @saved?.IterationLabel</strong> and its prompt will be removed from this draft version.
+        </ConfirmDialog>
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long VersionId { get; set; }
+    [Parameter] public long? IterationId { get; set; }
+
+    private VersionConfiguration? configuration;
+    private ShepherdApi.Iteration? saved;
+    private ShepherdApi.UpdateIterationRequest form = new();
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool loaded;
+    private bool saving;
+    private bool justSaved;
+    private bool confirmingDelete;
+    private bool confirmingReplace;
+    private string? pendingSourcePrompt;
+
+    // Drafts (AD-11): prompt text only, saved shortly after typing stops.
+    private Draft? offeredDraft;
+    private bool draftChecked;
+    private CancellationTokenSource? draftSaveDelay;
+
+    private string DraftKey => IterationId is { } id ? $"iteration:{id}:prompt" : $"version:{VersionId}:new-iteration:prompt";
+    private string SavedPrompt => saved?.Prompt ?? string.Empty;
+    private bool IsDirty => loaded && !string.Equals(form.Prompt ?? string.Empty, SavedPrompt, StringComparison.Ordinal);
+
+    private (long, long?)? loadedRoute;
+
+    // Blazor note: both @page routes map to this component, so navigating from ".../new" to the created
+    // iteration (or between iterations) reuses the SAME instance. OnInitializedAsync would not run
+    // again; OnParametersSetAsync does, so the page reloads whenever the route parameters change.
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedRoute == (VersionId, IterationId))
+        {
+            return;
+        }
+
+        loadedRoute = (VersionId, IterationId);
+        draftSaveDelay?.Cancel();
+        (configuration, saved, loaded, draftChecked, offeredDraft, confirmingDelete) = (null, null, false, false, null, false);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var loadTask = Loader.LoadAsync(VersionId);
+            await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
+            configuration = loadTask.Result;
+            saved = IterationId is { } id ? configuration.Iterations.FirstOrDefault(i => i.IterationID == id) : null;
+
+            if (IterationId is not null && saved is null)
+            {
+                problem = new ApiProblem(ApiProblemKind.NotFound, "Not found", $"Iteration {IterationId} is not part of this version.");
+                return;
+            }
+
+            form = saved is null
+                ? new ShepherdApi.UpdateIterationRequest
+                {
+                    // Next sequence number suggested; editable (brief §7.1).
+                    Sequence = configuration.Iterations.Select(i => i.Sequence).DefaultIfEmpty(0).Max() + 1,
+                    IterationLabel = string.Empty,
+                    Prompt = string.Empty,
+                }
+                : new ShepherdApi.UpdateIterationRequest
+                {
+                    Sequence = saved.Sequence,
+                    IterationLabel = saved.IterationLabel ?? string.Empty,
+                    Prompt = saved.Prompt ?? string.Empty,
+                    Scenario = saved.Scenario,
+                    Notes = saved.Notes,
+                };
+            loaded = true;
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    // Browser storage needs JS interop, available only after an interactive render; the data must be
+    // loaded too, so the draft can be compared with the saved prompt.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (draftChecked || !loaded || configuration is null || configuration.IsConfigurationFrozen)
+        {
+            return;
+        }
+
+        draftChecked = true;
+        var draft = await Drafts.LoadAsync(DraftKey);
+        if (draft is not null && !string.Equals(draft.Text, form.Prompt, StringComparison.Ordinal))
+        {
+            offeredDraft = draft;
+            StateHasChanged();
+        }
+    }
+
+    private void RestoreDraft()
+    {
+        form.Prompt = offeredDraft!.Text;
+        offeredDraft = null;
+    }
+
+    private async Task DiscardDraftAsync()
+    {
+        offeredDraft = null;
+        await Drafts.DeleteAsync(DraftKey);
+    }
+
+    private async Task OnPromptEdited()
+    {
+        justSaved = false;
+        draftSaveDelay?.Cancel();
+        draftSaveDelay = new CancellationTokenSource();
+        var token = draftSaveDelay.Token;
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(800), token);
+            if (IsDirty)
+            {
+                await Drafts.SaveAsync(DraftKey, form.Prompt);
+            }
+            else
+            {
+                await Drafts.DeleteAsync(DraftKey);
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // Superseded by a later keystroke.
+        }
+    }
+
+    private void UseSourcePrompt(string prompt)
+    {
+        if (string.IsNullOrEmpty(form.Prompt))
+        {
+            ApplySourcePrompt(prompt);
+            return;
+        }
+
+        pendingSourcePrompt = prompt;
+        confirmingReplace = true;
+    }
+
+    private void ConfirmReplace()
+    {
+        ApplySourcePrompt(pendingSourcePrompt ?? string.Empty);
+        confirmingReplace = false;
+    }
+
+    private void ApplySourcePrompt(string prompt)
+    {
+        form.Prompt = prompt;
+        _ = OnPromptEdited();
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        draftSaveDelay?.Cancel();
+        try
+        {
+            if (IterationId is null)
+            {
+                var created = await Iterations.IterationsPostAsync(new ShepherdApi.CreateIterationRequest
+                {
+                    ExperimentVersionID = VersionId,
+                    Sequence = form.Sequence,
+                    IterationLabel = form.IterationLabel.Trim(),
+                    Prompt = form.Prompt,
+                    Scenario = NullIfBlank(form.Scenario?.Trim()),
+                    Notes = NullIfBlank(form.Notes),
+                });
+                await Drafts.DeleteAsync(DraftKey);
+                Navigation.NavigateTo($"versions/{VersionId}/iterations/{created.IterationID}", replace: true);
+                return;
+            }
+
+            form.IterationLabel = form.IterationLabel.Trim();
+            form.Scenario = NullIfBlank(form.Scenario?.Trim());
+            form.Notes = NullIfBlank(form.Notes);
+            saved = await Iterations.IterationsPutAsync(IterationId.Value, form);
+            await Drafts.DeleteAsync(DraftKey);
+            justSaved = true;
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+
+            if (mapped.Kind == ApiProblemKind.RecordLocked)
+            {
+                configuration = await Loader.LoadAsync(VersionId);
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            await Iterations.IterationsDeleteAsync(IterationId!.Value);
+            await Drafts.DeleteAsync(DraftKey);
+            Navigation.NavigateTo($"versions/{VersionId}?tab=iterations");
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            saving = false;
+            confirmingDelete = false;
+        }
+    }
+
+    // Optional fields left blank are stored as null. The prompt is never altered (byte-exact, AD-8).
+    private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    public void Dispose() => draftSaveDelay?.Cancel();
+}

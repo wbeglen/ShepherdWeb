@@ -1,0 +1,92 @@
+@page "/experiments"
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Experiments · ShepherdWeb</PageTitle>
+
+<div class="d-flex align-items-baseline gap-3 mb-3">
+    <h1 class="h3 mb-0">Experiments</h1>
+    <a class="btn btn-sm btn-primary" href="versions/new">New experiment version</a>
+</div>
+
+@* "Experiment" is a UI grouping of versions by Name, not a domain entity (brief §5.3). *@
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (groups is null)
+{
+    @if (problem is null)
+    {
+        <p>Loading…</p>
+    }
+}
+else if (groups.Count == 0)
+{
+    <p>No experiment versions yet.</p>
+}
+else
+{
+    @foreach (var group in groups)
+    {
+        <section class="mb-4">
+            <div class="d-flex align-items-baseline gap-3">
+                <h2 class="h5 mb-2">@group.Key</h2>
+                <a class="small" href="versions/new?name=@Uri.EscapeDataString(group.Key)">New version of this experiment</a>
+            </div>
+            <table class="table table-sm table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th style="width: 10rem">Version</th>
+                        <th style="width: 10rem">Status</th>
+                        <th style="width: 16rem">Locked</th>
+                        <th>Effective</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var version in group)
+                    {
+                        var statusName = ReferenceData.StatusName(version.StatusID);
+                        <tr>
+                            <td><a href="versions/@version.ExperimentVersionID">@version.VersionLabel</a></td>
+                            <td>
+                                @statusName
+                                @if (VersionLifecycle.StatusMismatch(version, statusName, Conventions.Value) is { } mismatch)
+                                {
+                                    <span class="text-warning ms-1" title="@mismatch" role="img" aria-label="@mismatch">⚠</span>
+                                }
+                            </td>
+                            <td><UtcTimestamp Value="version.LockedUTC" Missing="not locked" /></td>
+                            <td><UtcTimestamp Value="version.EffectiveDateUTC" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<IGrouping<string, ShepherdApi.ExperimentVersion>>? groups;
+    private ApiProblem? problem;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var versionsTask = Versions.ExperimentVersionsGetAsync();
+            await Task.WhenAll(versionsTask, ReferenceData.EnsureLoadedAsync());
+
+            // ShepherdAPI returns versions ordered by Name, then VersionLabel.
+            groups = versionsTask.Result.GroupBy(v => v.Name ?? string.Empty).ToList();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+}

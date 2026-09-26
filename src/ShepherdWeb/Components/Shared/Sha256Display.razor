@@ -1,0 +1,9 @@
+@* A SHA-256 shortened for reading, with the full value on hover and in the DOM for copying. *@
+
+<code class="sha256" title="SHA-256 @Value">@Short</code>
+
+@code {
+    [Parameter, EditorRequired] public string Value { get; set; } = string.Empty;
+
+    private string Short => Value.Length > 12 ? Value[..12] + "…" : Value;
+}

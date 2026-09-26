@@ -1,5 +1,6 @@
 @using System.Net.Http
 @using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.QuickGrid
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.Components.Web
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
@@ -10,8 +11,14 @@
 @using ShepherdWeb.Components
 @using ShepherdWeb.Components.Layout
 @using ShepherdWeb.Components.Shared
+@using ShepherdWeb.Features.ExperimentVersions
+@using ShepherdWeb.Features.Iterations
+@using ShepherdWeb.Features.Parameters
+@using ShepherdWeb.Features.Reference
+@using ShepherdWeb.Features.ScoreRules
 @using ShepherdWeb.Infrastructure
 @using ShepherdWeb.Infrastructure.Api
+@using ShepherdWeb.Infrastructure.Drafts
 @using ShepherdWeb.Infrastructure.Time
 @* Generated ShepherdAPI types are referenced through an alias (ShepherdApi.Execution,
    ShepherdApi.IStatusesClient). Importing the namespace directly would let the generated DTO

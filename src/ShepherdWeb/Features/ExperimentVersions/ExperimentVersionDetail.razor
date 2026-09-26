@@ -1,0 +1,90 @@
+@page "/versions/{VersionId:long}"
+@inject VersionConfigurationLoader Loader
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<PageTitle>@(configuration?.Version.Name ?? "Version") · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (configuration is { } config)
+{
+    <VersionHeader Version="config.Version" ExecutionCount="config.ExecutionCount" />
+
+    @* Tabs are links with a query string, so each tab has its own URL (AD-4). *@
+    <ul class="nav nav-tabs mb-3">
+        @foreach (var (key, label) in Tabs(config))
+        {
+            <li class="nav-item">
+                <a class="nav-link @(Tab == key ? "active" : null)" aria-current="@(Tab == key ? "page" : null)"
+                   href="versions/@VersionId?tab=@key">@label</a>
+            </li>
+        }
+    </ul>
+
+    @switch (Tab)
+    {
+        case "iterations":
+            <IterationList Configuration="config" />
+            break;
+        case "parameters":
+            <ParameterTable Configuration="config" OnChanged="LoadAsync" />
+            break;
+        case "score-rules":
+            <ScoreRuleTable Configuration="config" OnChanged="LoadAsync" />
+            break;
+        default:
+            <VersionOverview Configuration="config" OnChanged="LoadAsync" />
+            break;
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long VersionId { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? TabQuery { get; set; }
+
+    private VersionConfiguration? configuration;
+    private ApiProblem? problem;
+    private long loadedVersionId;
+
+    private string Tab => TabQuery ?? "overview";
+
+    private static IEnumerable<(string Key, string Label)> Tabs(VersionConfiguration config) =>
+    [
+        ("overview", "Overview"),
+        ("iterations", $"Iterations ({config.Iterations.Count})"),
+        ("parameters", $"Parameters ({config.Parameters.Count})"),
+        ("score-rules", $"Score rules ({config.ScoreRules.Count})"),
+    ];
+
+    // Switching tabs changes only the query string, which re-runs OnParametersSetAsync on this same
+    // component instance; reload only when the version itself changes.
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedVersionId != VersionId)
+        {
+            loadedVersionId = VersionId;
+            configuration = null;
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var loadTask = Loader.LoadAsync(VersionId);
+            await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
+            configuration = loadTask.Result;
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+}

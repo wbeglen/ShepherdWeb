@@ -1,0 +1,210 @@
+@page "/versions/{VersionId:long}/review"
+@inject VersionConfigurationLoader Loader
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Review configuration · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (configuration is { } config)
+{
+    var version = config.Version;
+    var locked = VersionLifecycle.IsLocked(version);
+
+    <VersionHeader Version="version" ExecutionCount="config.ExecutionCount" Current="Review" />
+
+    @if (justLocked)
+    {
+        <div class="alert alert-success" role="status">Locked. The configuration below is now permanent.</div>
+    }
+
+    <p class="text-secondary">
+        @if (locked)
+        {
+            <text>The complete configuration of this version, as locked.</text>
+        }
+        else
+        {
+            <text>The complete configuration of this version. Check all of it before locking: once locked, none of it can be changed.</text>
+        }
+    </p>
+
+    <section class="mb-4">
+        <h2 class="h5">Version</h2>
+        <dl class="row mb-0">
+            <dt class="col-sm-3">Effective</dt>
+            <dd class="col-sm-9"><UtcTimestamp Value="version.EffectiveDateUTC" /></dd>
+            <dt class="col-sm-3">Description</dt>
+            <dd class="col-sm-9 text-prewrap">@version.Description</dd>
+        </dl>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5">Parameters (@config.Parameters.Count)</h2>
+        @if (config.Parameters.Count == 0)
+        {
+            <p class="text-secondary">None.</p>
+        }
+        else
+        {
+            <table class="table table-sm w-auto">
+                <thead><tr><th>Name</th><th>Value</th><th>Unit</th><th>Notes</th></tr></thead>
+                <tbody>
+                    @foreach (var p in config.Parameters)
+                    {
+                        <tr><td>@p.Name</td><td>@p.Value</td><td>@p.Unit</td><td class="text-prewrap">@p.Notes</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5">Score rules (@config.ScoreRules.Count)</h2>
+        @if (config.ScoreRules.Count == 0)
+        {
+            <p class="text-secondary">None.</p>
+        }
+        else
+        {
+            @foreach (var phase in ReferenceData.Phases.Where(ph => config.ScoreRules.Any(r => r.PhaseID == ph.PhaseID)))
+            {
+                <h3 class="h6 mt-3">@phase.Name</h3>
+                <table class="table table-sm w-auto">
+                    <thead><tr><th>Category</th><th>Better</th><th class="text-end">Weight %</th><th class="text-end">Min</th><th class="text-end">Max</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in config.ScoreRules.Where(r => r.PhaseID == phase.PhaseID))
+                        {
+                            <tr>
+                                <td>@ReferenceData.ScoreCategoryName(r.ScoreCategoryID)</td>
+                                <td>@HigherIsBetter(r.ScoreCategoryID)</td>
+                                <td class="text-end">@r.WeightPercent.ToString("0.##")</td>
+                                <td class="text-end">@r.MinScore</td>
+                                <td class="text-end">@r.MaxScore</td>
+                                <td>@r.RuleNotes</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5">Iterations (@config.Iterations.Count)</h2>
+        @if (config.Iterations.Count == 0)
+        {
+            <p class="text-secondary">None.</p>
+        }
+        @foreach (var iteration in config.Iterations)
+        {
+            var prompt = new PromptText(iteration.Prompt);
+            <article class="border rounded p-3 mb-3">
+                <h3 class="h6">
+                    @iteration.Sequence. @iteration.IterationLabel
+                    @if (!string.IsNullOrWhiteSpace(iteration.Scenario))
+                    {
+                        <span class="text-secondary fw-normal"> · @iteration.Scenario</span>
+                    }
+                </h3>
+                <div class="small text-secondary mb-2">
+                    @prompt.LineCount lines · @prompt.ByteCount bytes · <Sha256Display Value="@prompt.Sha256" />
+                </div>
+                <pre class="prompt-view">@iteration.Prompt</pre>
+                @if (!string.IsNullOrWhiteSpace(iteration.Notes))
+                {
+                    <div class="small text-prewrap"><strong>Notes:</strong> @iteration.Notes</div>
+                }
+            </article>
+        }
+    </section>
+
+    @if (!locked)
+    {
+        <div class="border-top pt-3">
+            <button class="btn btn-danger" disabled="@(lockStatus is null)" @onclick="() => confirming = true">Lock this version…</button>
+            @if (lockStatus is null)
+            {
+                <span class="text-danger ms-2">There is no “@Conventions.Value.LockedStatusName” status. Create it under Reference data first.</span>
+            }
+        </div>
+
+        <ConfirmDialog Visible="confirming" Title="Lock this version?" ConfirmText="Lock permanently" ConfirmClass="btn-danger"
+                       Busy="locking" OnConfirm="LockAsync" OnCancel="() => confirming = false">
+            <p><strong>@version.Name @version.VersionLabel</strong></p>
+            <ul>
+                <li>@config.Iterations.Count iterations, @config.Parameters.Count parameters, @config.ScoreRules.Count score rules</li>
+                <li>Status becomes “@Conventions.Value.LockedStatusName”.</li>
+            </ul>
+            <p class="mb-0">
+                The configuration becomes permanent and executions become possible.
+                <strong>This cannot be undone through ShepherdWeb or ShepherdAPI.</strong>
+            </p>
+        </ConfirmDialog>
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long VersionId { get; set; }
+
+    private VersionConfiguration? configuration;
+    private ShepherdApi.Status? lockStatus;
+    private ApiProblem? problem;
+    private bool confirming;
+    private bool locking;
+    private bool justLocked;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var loadTask = Loader.LoadAsync(VersionId);
+            await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
+            configuration = loadTask.Result;
+            lockStatus = ReferenceData.FindStatus(Conventions.Value.LockedStatusName);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private string HigherIsBetter(int scoreCategoryId) =>
+        ReferenceData.ScoreCategories.FirstOrDefault(c => c.ScoreCategoryID == scoreCategoryId)?.HigherIsBetter switch
+        {
+            true => "higher",
+            false => "lower",
+            null => "?",
+        };
+
+    private async Task LockAsync()
+    {
+        locking = true;
+        problem = null;
+        try
+        {
+            await Versions.LockAsync(VersionId, new ShepherdApi.LockExperimentVersionRequest { StatusID = lockStatus!.StatusID });
+            justLocked = true;
+            await LoadAsync(); // Show the configuration as ShepherdAPI now holds it.
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            locking = false;
+            confirming = false;
+        }
+    }
+}

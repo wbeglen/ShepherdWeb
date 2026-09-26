@@ -1,0 +1,147 @@
+@page "/versions/new"
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+@inject NavigationManager Navigation
+
+<PageTitle>New experiment version · ShepherdWeb</PageTitle>
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb small mb-1">
+        <li class="breadcrumb-item"><a href="experiments">Experiments</a></li>
+        <li class="breadcrumb-item active" aria-current="page">New version</li>
+    </ol>
+</nav>
+<h1 class="h3">New experiment version</h1>
+<p class="text-secondary">
+    A new version starts as <strong>@Conventions.Value.DraftStatusName</strong>. You add iterations, parameters and score rules
+    next, then lock it when the configuration is complete.
+</p>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (ready)
+{
+    <EditForm Model="form" OnValidSubmit="CreateAsync" class="form-narrow">
+        <DataAnnotationsValidator />
+        <ApiValidation @ref="apiValidation" />
+        <ValidationSummary />
+
+        <div class="mb-3">
+            <label class="form-label" for="name">Experiment name</label>
+            <InputText id="name" class="form-control" list="experiment-names" @bind-Value="form.Name" />
+            <datalist id="experiment-names">
+                @foreach (var name in existingNames)
+                {
+                    <option value="@name"></option>
+                }
+            </datalist>
+            <div class="form-text">Pick an existing experiment to add a version of it, or type a new name.</div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="label">Version label</label>
+            <InputText id="label" class="form-control" @bind-Value="form.VersionLabel" />
+            @if (LabelsFor(form.Name) is { Count: > 0 } labels)
+            {
+                <div class="form-text">Existing versions: @string.Join(", ", labels)</div>
+            }
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="effective">Effective date (UTC)</label>
+            <div class="input-group">
+                <InputDate id="effective" Type="InputDateType.DateTimeLocal" class="form-control" @bind-Value="form.EffectiveDateUTC" />
+                <button type="button" class="btn btn-outline-secondary" @onclick="() => form.EffectiveDateUTC = Utc.Now">Now</button>
+            </div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="description">Description</label>
+            <InputTextArea id="description" class="form-control" rows="5" @bind-Value="form.Description" />
+        </div>
+
+        <button type="submit" class="btn btn-primary" disabled="@saving">Create version</button>
+        <a class="btn btn-link" href="experiments">Cancel</a>
+    </EditForm>
+}
+
+@code {
+    [SupplyParameterFromQuery] public string? Name { get; set; }
+
+    private ShepherdApi.CreateExperimentVersionRequest form = new();
+    private ApiValidation? apiValidation;
+    private IReadOnlyList<ShepherdApi.ExperimentVersion> existing = [];
+    private IReadOnlyList<string> existingNames = [];
+    private ApiProblem? problem;
+    private bool ready;
+    private bool saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        form = new ShepherdApi.CreateExperimentVersionRequest
+        {
+            Name = Name ?? string.Empty,
+            VersionLabel = string.Empty,
+            Description = string.Empty,
+            EffectiveDateUTC = Utc.Now,
+        };
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var versionsTask = Versions.ExperimentVersionsGetAsync();
+            await Task.WhenAll(versionsTask, ReferenceData.EnsureLoadedAsync());
+            existing = versionsTask.Result;
+            existingNames = existing.Select(v => v.Name ?? string.Empty).Distinct().ToList();
+
+            if (ReferenceData.FindStatus(Conventions.Value.DraftStatusName) is null)
+            {
+                problem = new ApiProblem(ApiProblemKind.Unexpected, "Missing status",
+                    $"There is no “{Conventions.Value.DraftStatusName}” status. Create it under Reference data first.");
+                return;
+            }
+
+            ready = true;
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private List<string> LabelsFor(string? name) =>
+        existing.Where(v => string.Equals(v.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Select(v => v.VersionLabel ?? string.Empty).ToList();
+
+    private async Task CreateAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.VersionLabel = form.VersionLabel.Trim();
+            form.StatusID = ReferenceData.FindStatus(Conventions.Value.DraftStatusName)!.StatusID;
+            // The input is labeled UTC; a picked value arrives with unspecified kind.
+            form.EffectiveDateUTC = Utc.FromUtcInput(form.EffectiveDateUTC);
+
+            var created = await Versions.ExperimentVersionsPostAsync(form);
+            Navigation.NavigateTo($"versions/{created.ExperimentVersionID}");
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

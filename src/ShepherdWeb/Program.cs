@@ -1,6 +1,8 @@
 using ShepherdWeb.Components;
+using ShepherdWeb.Features.ExperimentVersions;
 using ShepherdWeb.Infrastructure;
 using ShepherdWeb.Infrastructure.Api;
+using ShepherdWeb.Infrastructure.Drafts;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +19,8 @@ builder.Services.AddOptions<ConventionsOptions>()
 
 // Scoped = per circuit (per browser tab) in Interactive Server (AD-4).
 builder.Services.AddScoped<ReferenceData>();
+builder.Services.AddScoped<VersionConfigurationLoader>();
+builder.Services.AddScoped<IDraftStore, BrowserDraftStore>();
 
 var app = builder.Build();
 

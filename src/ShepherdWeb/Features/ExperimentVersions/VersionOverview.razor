@@ -1,0 +1,100 @@
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+
+<ProblemDisplay Problem="problem" />
+
+<dl class="row mb-4">
+    <dt class="col-sm-3">Effective</dt>
+    <dd class="col-sm-9"><UtcTimestamp Value="Version.EffectiveDateUTC" /></dd>
+    <dt class="col-sm-3">Locked</dt>
+    <dd class="col-sm-9"><UtcTimestamp Value="Version.LockedUTC" Missing="not locked" /></dd>
+    <dt class="col-sm-3">Description</dt>
+    <dd class="col-sm-9 text-prewrap">@Version.Description</dd>
+</dl>
+
+<div class="d-flex flex-wrap gap-2 mb-4">
+    @if (!VersionLifecycle.IsLocked(Version))
+    {
+        @if (!Configuration.IsConfigurationFrozen)
+        {
+            <a class="btn btn-outline-primary" href="versions/@Version.ExperimentVersionID/edit">Edit details</a>
+        }
+        <a class="btn btn-primary" href="versions/@Version.ExperimentVersionID/review">Review and lock…</a>
+    }
+    else
+    {
+        <a class="btn btn-outline-primary" href="versions/@Version.ExperimentVersionID/review">Review configuration</a>
+    }
+</div>
+
+<section class="form-narrow">
+    <h2 class="h6">Status</h2>
+    <div class="input-group">
+        <select class="form-select" aria-label="Status" @bind="selectedStatusId">
+            @foreach (var status in offerable)
+            {
+                <option value="@status.StatusID">@status.Name</option>
+            }
+        </select>
+        <button class="btn btn-outline-secondary" disabled="@(saving || selectedStatusId == Version.StatusID)" @onclick="SetStatusAsync">
+            Change status
+        </button>
+    </div>
+    <div class="form-text">
+        @if (VersionLifecycle.IsLocked(Version))
+        {
+            <text>Status can still change after locking. It does not unlock the configuration.</text>
+        }
+        else
+        {
+            <text>“@Conventions.Value.LockedStatusName” is set only by the Lock action, together with the lock timestamp.</text>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private ShepherdApi.ExperimentVersion Version => Configuration.Version;
+    private IReadOnlyList<ShepherdApi.Status> offerable = [];
+    private int selectedStatusId;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override void OnParametersSet()
+    {
+        offerable = VersionLifecycle.OfferableStatuses(Version, ReferenceData.Statuses, Conventions.Value);
+
+        // A mismatched current status (e.g. "Locked" without a lock) is not offerable; show it
+        // anyway so the select reflects reality instead of silently picking another value.
+        if (offerable.All(s => s.StatusID != Version.StatusID) &&
+            ReferenceData.Statuses.FirstOrDefault(s => s.StatusID == Version.StatusID) is { } current)
+        {
+            offerable = [current, .. offerable];
+        }
+
+        selectedStatusId = Version.StatusID;
+    }
+
+    private async Task SetStatusAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            await Versions.StatusAsync(Version.ExperimentVersionID, new ShepherdApi.SetExperimentVersionStatusRequest { StatusID = selectedStatusId });
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}

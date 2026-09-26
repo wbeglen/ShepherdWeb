@@ -58,3 +58,33 @@ h1:focus {
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
     text-align: start;
 }
+/* ShepherdWeb */
+.form-narrow {
+    max-width: 48rem;
+}
+
+.text-prewrap {
+    white-space: pre-wrap;
+}
+
+/* Prompts are shown and edited exactly as stored: monospace, whitespace preserved. */
+.prompt-editor,
+.prompt-view {
+    font-family: var(--bs-font-monospace);
+    font-size: 0.875rem;
+    white-space: pre-wrap;
+    tab-size: 4;
+}
+
+.prompt-view {
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.prompt-preview {
+    max-height: 16rem;
+    overflow: auto;
+}

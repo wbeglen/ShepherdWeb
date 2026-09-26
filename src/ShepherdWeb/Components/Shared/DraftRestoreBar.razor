@@ -1,0 +1,21 @@
+@* Offers an unsaved draft back to the operator (docs/ARCHITECTURE.md AD-11). Never applies it
+   without being asked. *@
+
+@if (Draft is not null)
+{
+    <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 py-2" role="status">
+        <span>Unsaved @What from <UtcTimestamp Value="Draft.SavedUtc" /> is stored in this browser.</span>
+        <button type="button" class="btn btn-sm btn-primary" @onclick="OnRestore">Restore</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="OnDiscard">Discard</button>
+    </div>
+}
+
+@code {
+    [Parameter] public ShepherdWeb.Infrastructure.Drafts.Draft? Draft { get; set; }
+
+    /// <summary>What the draft contains, for the message ("prompt text").</summary>
+    [Parameter] public string What { get; set; } = "text";
+
+    [Parameter] public EventCallback OnRestore { get; set; }
+    [Parameter] public EventCallback OnDiscard { get; set; }
+}

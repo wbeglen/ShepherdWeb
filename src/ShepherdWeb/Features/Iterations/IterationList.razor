@@ -1,0 +1,46 @@
+@* The Iterations tab of a version. *@
+
+@if (!Configuration.IsConfigurationFrozen)
+{
+    <a class="btn btn-sm btn-primary mb-3" href="versions/@Configuration.Version.ExperimentVersionID/iterations/new">New iteration</a>
+}
+
+@if (Configuration.Iterations.Count == 0)
+{
+    <p class="text-secondary">No iterations yet.</p>
+}
+else
+{
+    <table class="table table-sm table-hover align-middle">
+        <thead>
+            <tr>
+                <th class="text-end" style="width: 4rem">#</th>
+                <th>Label</th>
+                <th>Scenario</th>
+                <th>Prompt</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var iteration in Configuration.Iterations)
+            {
+                var prompt = new PromptText(iteration.Prompt);
+                <tr>
+                    <td class="text-end">@iteration.Sequence</td>
+                    <td><a href="versions/@Configuration.Version.ExperimentVersionID/iterations/@iteration.IterationID">@iteration.IterationLabel</a></td>
+                    <td>@iteration.Scenario</td>
+                    <td class="small">
+                        <span class="text-truncate d-inline-block align-bottom" style="max-width: 28rem">@FirstLine(iteration.Prompt)</span>
+                        <span class="text-secondary"> · @prompt.LineCount lines · <Sha256Display Value="@prompt.Sha256" /></span>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+
+    private static string FirstLine(string? text) =>
+        (text ?? string.Empty).Split('\n', 2)[0].TrimEnd('\r');
+}

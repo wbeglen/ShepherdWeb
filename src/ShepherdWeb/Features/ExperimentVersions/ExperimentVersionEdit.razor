@@ -1,0 +1,117 @@
+@page "/versions/{VersionId:long}/edit"
+@inject VersionConfigurationLoader Loader
+@inject ShepherdApi.IExperimentVersionsClient Versions
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject NavigationManager Navigation
+
+<PageTitle>Edit version · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (configuration is { } config)
+{
+    <VersionHeader Version="config.Version" ExecutionCount="config.ExecutionCount" Current="Edit" />
+
+    @if (config.IsConfigurationFrozen)
+    {
+        <p>This version's configuration is frozen, so its details can no longer be edited. <a href="versions/@VersionId">Back to the version</a></p>
+    }
+    else
+    {
+        <EditForm Model="form" OnValidSubmit="SaveAsync" class="form-narrow">
+            <DataAnnotationsValidator />
+            <ApiValidation @ref="apiValidation" />
+            <ValidationSummary />
+
+            <div class="mb-3">
+                <label class="form-label" for="name">Experiment name</label>
+                <InputText id="name" class="form-control" @bind-Value="form.Name" />
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="label">Version label</label>
+                <InputText id="label" class="form-control" @bind-Value="form.VersionLabel" />
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="effective">Effective date (UTC)</label>
+                <div class="input-group">
+                    <InputDate id="effective" Type="InputDateType.DateTimeLocal" class="form-control" @bind-Value="form.EffectiveDateUTC" />
+                    <button type="button" class="btn btn-outline-secondary" @onclick="() => form.EffectiveDateUTC = Utc.Now">Now</button>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="description">Description</label>
+                <InputTextArea id="description" class="form-control" rows="5" @bind-Value="form.Description" />
+            </div>
+
+            <button type="submit" class="btn btn-primary" disabled="@saving">Save</button>
+            <a class="btn btn-link" href="versions/@VersionId">Cancel</a>
+        </EditForm>
+    }
+}
+
+@code {
+    [Parameter] public long VersionId { get; set; }
+
+    private VersionConfiguration? configuration;
+    private ShepherdApi.UpdateExperimentVersionRequest form = new();
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var loadTask = Loader.LoadAsync(VersionId);
+            await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
+            configuration = loadTask.Result;
+            var version = configuration.Version;
+            form = new ShepherdApi.UpdateExperimentVersionRequest
+            {
+                Name = version.Name ?? string.Empty,
+                VersionLabel = version.VersionLabel ?? string.Empty,
+                EffectiveDateUTC = version.EffectiveDateUTC,
+                Description = version.Description ?? string.Empty,
+            };
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        try
+        {
+            form.Name = form.Name.Trim();
+            form.VersionLabel = form.VersionLabel.Trim();
+            form.EffectiveDateUTC = Utc.FromUtcInput(form.EffectiveDateUTC);
+            await Versions.ExperimentVersionsPutAsync(VersionId, form);
+            Navigation.NavigateTo($"versions/{VersionId}");
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (mapped.Kind == ApiProblemKind.RecordLocked)
+            {
+                await LoadAsync(); // Locked elsewhere meanwhile: re-read so the form disappears.
+            }
+
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}
