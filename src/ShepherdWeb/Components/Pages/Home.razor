@@ -1,0 +1,122 @@
+@page "/"
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ShepherdApiOptions> ApiOptions
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Setup · ShepherdWeb</PageTitle>
+
+<h1 class="h3">Setup</h1>
+<p class="text-secondary">
+    Connection to ShepherdAPI and the reference data ShepherdWeb depends on.
+</p>
+
+<ProblemDisplay Problem="problem" OnRetry="ReloadAsync" />
+
+@if (loading)
+{
+    <p>Loading reference data…</p>
+}
+else if (ReferenceData.IsLoaded)
+{
+    <section class="mb-4">
+        <h2 class="h5">ShepherdAPI</h2>
+        <p class="mb-0">Connected to <code>@ApiOptions.Value.BaseUrl</code>.</p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5">Conventions</h2>
+        <p class="small text-secondary">
+            Reference rows ShepherdWeb looks up by name (configured under <code>Conventions</code> in appsettings).
+        </p>
+        <table class="table table-sm align-middle w-auto">
+            <thead>
+                <tr><th>Row</th><th>Used for</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var check in conventionChecks)
+                {
+                    <tr>
+                        <td><code>@check.Name</code> <span class="text-secondary small">(@check.Kind)</span></td>
+                        <td>@check.UsedFor</td>
+                        <td>
+                            @if (check.Found)
+                            {
+                                <span class="text-success">Present</span>
+                            }
+                            else
+                            {
+                                <span class="text-danger">Missing — create this @check.Kind.ToLowerInvariant() before @check.NeededBefore.</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2 class="h5">Reference data</h2>
+        <table class="table table-sm w-auto">
+            <tbody>
+                <tr><th scope="row">Agents</th><td>@ReferenceData.Agents.Count (@ReferenceData.Agents.Count(a => a.Active) active)</td></tr>
+                <tr><th scope="row">Phases</th><td>@PhaseList</td></tr>
+                <tr><th scope="row">Statuses</th><td>@string.Join(", ", ReferenceData.Statuses.Select(s => s.Name))</td></tr>
+                <tr><th scope="row">Score categories</th><td>@ReferenceData.ScoreCategories.Count</td></tr>
+                <tr><th scope="row">Raters</th><td>@ReferenceData.Raters.Count</td></tr>
+                <tr><th scope="row">Artifact types</th><td>@ReferenceData.ArtifactTypes.Count</td></tr>
+            </tbody>
+        </table>
+    </section>
+}
+
+@code {
+    private sealed record ConventionCheck(string Name, string Kind, string UsedFor, string NeededBefore, bool Found);
+
+    private bool loading = true;
+    private ApiProblem? problem;
+    private IReadOnlyList<ConventionCheck> conventionChecks = [];
+
+    private string PhaseList => ReferenceData.Phases.Count == 0
+        ? "none"
+        : string.Join(" → ", ReferenceData.Phases.Select(p => p.Name));
+
+    protected override Task OnInitializedAsync() => LoadAsync(ReferenceData.EnsureLoadedAsync);
+
+    private Task ReloadAsync() => LoadAsync(ReferenceData.RefreshAsync);
+
+    private async Task LoadAsync(Func<Task> load)
+    {
+        loading = true;
+        problem = null;
+        try
+        {
+            await load();
+            conventionChecks = BuildChecks();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private IReadOnlyList<ConventionCheck> BuildChecks()
+    {
+        var c = Conventions.Value;
+        return
+        [
+            StatusCheck(c.DraftStatusName, "New experiment versions", "creating an experiment version"),
+            StatusCheck(c.LockedStatusName, "The Lock action", "locking a version"),
+            StatusCheck(c.DefaultExecutionStatusName, "New executions", "starting an execution"),
+            new(c.DeliveredPromptArtifactTypeName, "Artifact type", "Every delivered prompt", "starting an execution",
+                ReferenceData.FindArtifactType(c.DeliveredPromptArtifactTypeName) is not null),
+        ];
+    }
+
+    private ConventionCheck StatusCheck(string name, string usedFor, string neededBefore) =>
+        new(name, "Status", usedFor, neededBefore, ReferenceData.FindStatus(name) is not null);
+}

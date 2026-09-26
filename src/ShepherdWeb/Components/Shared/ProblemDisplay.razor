@@ -1,0 +1,41 @@
+@* Renders a failed ShepherdAPI call the same way on every page (docs/ARCHITECTURE.md AD-6).
+   Renders nothing when Problem is null, so pages can place it unconditionally. *@
+
+@if (Problem is not null)
+{
+    <div class="alert @AlertClass" role="alert">
+        <strong>@Problem.Title</strong>
+        @if (!string.IsNullOrWhiteSpace(Problem.Detail))
+        {
+            <span> — @Problem.Detail</span>
+        }
+        @if (Problem.Kind == ApiProblemKind.Unreachable)
+        {
+            <div class="small mt-1">Expected at <code>@ApiOptions.Value.BaseUrl</code>.</div>
+        }
+        @if (Problem.TraceId is not null)
+        {
+            <div class="small mt-1">ShepherdAPI trace ID: <code>@Problem.TraceId</code></div>
+        }
+        @if (OnRetry.HasDelegate)
+        {
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary" @onclick="OnRetry">Retry</button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Inject] private IOptions<ShepherdApiOptions> ApiOptions { get; set; } = default!;
+
+    [Parameter] public ApiProblem? Problem { get; set; }
+
+    /// <summary>Optional. When set, a Retry button is shown.</summary>
+    [Parameter] public EventCallback OnRetry { get; set; }
+
+    // A lock rejection is expected lifecycle behavior, not a failure, so it is shown as a warning.
+    private string AlertClass => Problem?.Kind is ApiProblemKind.RecordLocked or ApiProblemKind.Validation
+        ? "alert-warning"
+        : "alert-danger";
+}

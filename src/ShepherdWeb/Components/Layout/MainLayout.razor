@@ -1,0 +1,44 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+    <div class="sidebar">
+        <NavMenu />
+    </div>
+
+    <main>
+        <div class="top-row px-4">
+            <ApiStatusIndicator />
+        </div>
+
+        <article class="content px-4">
+            @* An unhandled exception in an Interactive Server component ends the circuit. The boundary
+               contains it to the page area so navigation and the rest of the app keep working (AD-4).
+               Expected ShepherdAPI failures never get here; pages handle them with ApiErrorMapper. *@
+            <ErrorBoundary @ref="errorBoundary">
+                <ChildContent>
+                    @Body
+                </ChildContent>
+                <ErrorContent Context="exception">
+                    <div class="alert alert-danger" role="alert">
+                        <h2 class="h5">Something went wrong on this page.</h2>
+                        <p class="mb-2"><code>@exception.GetType().Name</code>: @exception.Message</p>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => errorBoundary?.Recover()">Try again</button>
+                    </div>
+                </ErrorContent>
+            </ErrorBoundary>
+        </article>
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    private ErrorBoundary? errorBoundary;
+
+    // The layout instance survives navigation, so clear a tripped boundary when the page changes.
+    protected override void OnParametersSet() => errorBoundary?.Recover();
+}

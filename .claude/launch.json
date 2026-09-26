@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shepherdweb",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "src/ShepherdWeb", "--launch-profile", "https"],
+      "port": 7240,
+      "url": "https://localhost:7240"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+@* A persisted timestamp: UTC, explicitly labeled, with local time on hover (docs/ARCHITECTURE.md AD-10). *@
+
+@if (Value is { } value)
+{
+    <time datetime="@Utc.FromApi(value).ToString("O")" title="@Utc.FormatLocal(value)">@Utc.Format(value)</time>
+}
+else
+{
+    <span class="text-secondary">@Missing</span>
+}
+
+@code {
+    [Parameter] public DateTime? Value { get; set; }
+
+    /// <summary>Shown when Value is null (for example "not locked" or "in progress").</summary>
+    [Parameter] public string Missing { get; set; } = "—";
+}

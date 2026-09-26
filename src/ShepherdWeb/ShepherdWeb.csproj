@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.QuickGrid" Version="10.0.12" />
+    <PackageReference Include="NSwag.ApiDescription.Client" Version="14.7.1">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    Typed ShepherdAPI client generated at build time from the pinned contract snapshot
+    (docs/ARCHITECTURE.md AD-2; provenance in contracts/SOURCE.md). One client + interface per
+    OpenAPI tag, System.Text.Json, DataAnnotations carried over for form validation, and the base
+    address taken from the injected HttpClient rather than baked into generated code.
+    The client regenerates when the contract file changes. Changing only Options does not trigger
+    regeneration: delete obj/shepherdapi.openapiClient.cs, then build.
+    Generated types are used through the alias ShepherdApi (see Components/_Imports.razor).
+  -->
+  <ItemGroup>
+    <OpenApiReference Include="..\..\contracts\shepherdapi.openapi.json"
+                      CodeGenerator="NSwagCSharp"
+                      Namespace="ShepherdWeb.Infrastructure.Api.Generated"
+                      ClassName="{controller}Client"
+                      Options="/OperationGenerationMode:MultipleClientsFromFirstTagAndPathSegments /GenerateClientInterfaces:true /UseBaseUrl:false /JsonLibrary:SystemTextJson /GenerateDataAnnotations:true /GenerateNullableReferenceTypes:true /DateTimeType:System.DateTime /ArrayType:System.Collections.Generic.IReadOnlyList /ArrayInstanceType:System.Collections.Generic.List /ResponseArrayType:System.Collections.Generic.IReadOnlyList /InjectHttpClient:true /DisposeHttpClient:false /GenerateExceptionClasses:true" />
+  </ItemGroup>
+
+</Project>

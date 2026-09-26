@@ -1,0 +1,64 @@
+@* Layout-level ShepherdAPI status (docs/ARCHITECTURE.md AD-6). The check is the ReferenceData
+   load, which every page needs anyway, so it costs no extra request. The indicator follows every
+   load attempt in the circuit (including a page's own Retry) through ReferenceData.LoadCompleted. *@
+@implements IDisposable
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IOptions<ShepherdApiOptions> ApiOptions
+
+<span class="api-status small" title="@ApiOptions.Value.BaseUrl (as of the last check)">
+    @if (problem is not null)
+    {
+        <span class="text-danger">● @problem.Title</span>
+        <button class="btn btn-link btn-sm p-0 ms-2 align-baseline" @onclick="RetryAsync">Retry</button>
+    }
+    else if (ReferenceData.IsLoaded)
+    {
+        <span class="text-success">● ShepherdAPI connected</span>
+    }
+    else
+    {
+        <span class="text-secondary">● Checking ShepherdAPI…</span>
+    }
+</span>
+
+@code {
+    private ApiProblem? problem;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ReferenceData.LoadCompleted += OnLoadCompleted;
+        await LoadAsync(ReferenceData.EnsureLoadedAsync);
+    }
+
+    private Task RetryAsync()
+    {
+        problem = null;
+        return LoadAsync(ReferenceData.RefreshAsync);
+    }
+
+    // The outcome is read in OnLoadCompleted; here the failure only needs to be kept from
+    // escaping to the ErrorBoundary.
+    private static async Task LoadAsync(Func<Task> load)
+    {
+        try
+        {
+            await load();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+        }
+    }
+
+    // May be raised by another component's reload. InvokeAsync marshals onto this component's
+    // renderer context before StateHasChanged, which Blazor requires for out-of-band updates.
+    private void OnLoadCompleted() => _ = InvokeAsync(() =>
+    {
+        problem = ReferenceData.LastLoadError is { } error && ApiErrorMapper.IsApiFailure(error)
+            ? Errors.Map(error)
+            : null;
+        StateHasChanged();
+    });
+
+    public void Dispose() => ReferenceData.LoadCompleted -= OnLoadCompleted;
+}

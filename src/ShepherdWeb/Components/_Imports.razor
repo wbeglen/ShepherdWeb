@@ -1,0 +1,19 @@
+@using System.Net.Http
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using Microsoft.Extensions.Options
+@using Microsoft.JSInterop
+@using ShepherdWeb
+@using ShepherdWeb.Components
+@using ShepherdWeb.Components.Layout
+@using ShepherdWeb.Components.Shared
+@using ShepherdWeb.Infrastructure
+@using ShepherdWeb.Infrastructure.Api
+@using ShepherdWeb.Infrastructure.Time
+@* Generated ShepherdAPI types are referenced through an alias (ShepherdApi.Execution,
+   ShepherdApi.IStatusesClient). Importing the namespace directly would let the generated DTO
+   "Parameter" collide with Blazor's [Parameter] attribute, and the prefix shows where a type comes from. *@
+@using ShepherdApi = ShepherdWeb.Infrastructure.Api.Generated
