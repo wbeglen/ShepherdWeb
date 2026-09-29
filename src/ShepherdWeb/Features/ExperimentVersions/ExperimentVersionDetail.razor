@@ -33,6 +33,12 @@
         case "score-rules":
             <ScoreRuleTable Configuration="config" OnChanged="LoadAsync" />
             break;
+        case "executions":
+            <ExecutionList Configuration="config" />
+            break;
+        case "observations" when config.HasEndedExecution:
+            <VersionObservations Configuration="config" />
+            break;
         default:
             <VersionOverview Configuration="config" OnChanged="LoadAsync" />
             break;
@@ -53,13 +59,20 @@ else if (problem is null)
 
     private string Tab => TabQuery ?? "overview";
 
-    private static IEnumerable<(string Key, string Label)> Tabs(VersionConfiguration config) =>
-    [
-        ("overview", "Overview"),
-        ("iterations", $"Iterations ({config.Iterations.Count})"),
-        ("parameters", $"Parameters ({config.Parameters.Count})"),
-        ("score-rules", $"Score rules ({config.ScoreRules.Count})"),
-    ];
+    private static IEnumerable<(string Key, string Label)> Tabs(VersionConfiguration config)
+    {
+        yield return ("overview", "Overview");
+        yield return ("iterations", $"Iterations ({config.Iterations.Count})");
+        yield return ("parameters", $"Parameters ({config.Parameters.Count})");
+        yield return ("score-rules", $"Score rules ({config.ScoreRules.Count})");
+        yield return ("executions", $"Executions ({config.ExecutionCount})");
+
+        // Score observations become relevant once an execution has ended (owner rule, revision 4).
+        if (config.HasEndedExecution)
+        {
+            yield return ("observations", "Score observations");
+        }
+    }
 
     // Switching tabs changes only the query string, which re-runs OnParametersSetAsync on this same
     // component instance; reload only when the version itself changes.

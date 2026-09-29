@@ -21,11 +21,11 @@ public class ConfigurationComponentTests : AppTestContext
         var cut = Render<VersionHeader>(p => p.Add(x => x.Version, config.Version));
 
         Assert.Contains("no lock timestamp", cut.Markup);
-        Assert.DoesNotContain("Configuration locked at", cut.Markup);
+        Assert.DoesNotContain("This record is final", cut.Markup);
     }
 
     [Fact]
-    public async Task VersionOverview_UnlockedVersion_OffersReviewAndLock_ButNotLockedStatus()
+    public async Task VersionOverview_UnlockedVersion_OffersLock_ButNotLockedStatus()
     {
         await LoadedReferenceDataAsync();
         ServeVersion(locked: false, statusId: Json.Draft);
@@ -35,7 +35,8 @@ public class ConfigurationComponentTests : AppTestContext
 
         var options = cut.FindAll("select option").Select(o => o.TextContent).ToList();
         Assert.DoesNotContain("Locked", options);
-        Assert.Contains("Review and lock", cut.Markup);
+        Assert.Contains("Lock version", cut.Markup);
+        Assert.Contains("Edit details", cut.Markup);
     }
 
     [Fact]
@@ -76,11 +77,11 @@ public class ConfigurationComponentTests : AppTestContext
         Assert.True(config.IsConfigurationFrozen);
 
         var header = Render<VersionHeader>(p => p.Add(x => x.Version, config.Version).Add(x => x.ExecutionCount, config.ExecutionCount));
-        Assert.Contains("has 1 execution but is not locked", header.Markup);
+        Assert.Contains("1 execution recorded. The configuration is frozen", header.Markup);
 
         var overview = Render<VersionOverview>(p => p.Add(x => x.Configuration, config));
         Assert.DoesNotContain("Edit details", overview.Markup);
-        Assert.Contains("Review and lock", overview.Markup);
+        Assert.Contains("Lock version", overview.Markup);
 
         Assert.Empty(Render<ParameterTable>(p => p.Add(x => x.Configuration, config)).FindAll("form"));
         Assert.Empty(Render<ScoreRuleTable>(p => p.Add(x => x.Configuration, config)).FindAll("form"));
@@ -152,28 +153,34 @@ public class ConfigurationComponentTests : AppTestContext
     }
 
     [Fact]
-    public void ConfigurationReview_Lock_SendsLockedStatus_AndShowsTheLockedRecord()
+    public async Task VersionOverview_Lock_WarnsAboutExecutionsInProgress_AndSendsLockedStatus()
     {
-        var locked = false;
-        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration);
-        Api.On(HttpMethod.Get, "/api/experiment-versions/1", _ =>
-                StubShepherdApi.Response(HttpStatusCode.OK, Json.Version(locked, locked ? Json.Locked : Json.Draft)))
-            .On(HttpMethod.Post, "/api/experiment-versions/1/lock", _ =>
-            {
-                locked = true;
-                return StubShepherdApi.Response(HttpStatusCode.OK, Json.Version(true, Json.Locked));
-            });
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Locked));
+        var config = await LoadConfigurationAsync();
+        var changed = false;
 
-        var cut = Render<ConfigurationReview>(p => p.Add(x => x.VersionId, 1));
-        cut.WaitForAssertion(() => Assert.Contains("Build the thing.", cut.Markup));
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => changed = true));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
 
-        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock this version")).Click();
         Assert.Contains("cannot be undone", cut.Markup);
+        Assert.Contains("still in progress", cut.Markup);
         cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
 
-        cut.WaitForAssertion(() => Assert.Contains("Configuration locked at", cut.Markup));
+        cut.WaitForAssertion(() => Assert.True(changed));
         Assert.Contains("\"statusID\":2", Api.Requests.Single(r => r.Path.EndsWith("/lock")).Body);
-        Assert.DoesNotContain("Lock this version", cut.Markup);
+    }
+
+    [Fact]
+    public void ConfigurationReview_IsReadOnly_WithNoLockAction()
+    {
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration);
+
+        var cut = Render<ConfigurationReview>(p => p.Add(x => x.VersionId, 1));
+
+        cut.WaitForAssertion(() => Assert.Contains("Build the thing.", cut.Markup));
+        Assert.Empty(cut.FindAll("button"));
     }
 
     [Fact]

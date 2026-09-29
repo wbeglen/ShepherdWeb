@@ -1,0 +1,53 @@
+@* A compact table of executions, used by the Executions tab. *@
+@inject ReferenceData ReferenceData
+
+<table class="table table-sm table-hover align-middle">
+    <thead>
+        <tr>
+            <th style="width: 6rem">Execution</th>
+            @if (ShowIteration)
+            {
+                <th>Iteration</th>
+            }
+            <th>Agent</th>
+            <th>Phase</th>
+            <th class="text-end">Attempt</th>
+            <th>Started</th>
+            <th>Ended</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var e in Executions)
+        {
+            <tr>
+                <td><a href="executions/@e.ExecutionID">#@e.ExecutionID</a></td>
+                @if (ShowIteration)
+                {
+                    <td>@Configuration.IterationOf(e)?.IterationLabel</td>
+                }
+                <td>@ReferenceData.AgentName(e.AgentID)</td>
+                <td>@ReferenceData.PhaseName(e.PhaseID)</td>
+                <td class="text-end">@e.AttemptNumber</td>
+                <td><UtcTimestamp Value="e.StartUTC" /></td>
+                <td><UtcTimestamp Value="e.EndUTC" Missing="in progress" /></td>
+                <td class="text-nowrap">
+                    @if (e.InterventionCount > 0)
+                    {
+                        <span class="badge text-bg-warning" title="Human intervention recorded">⚑ @e.InterventionCount</span>
+                    }
+                    @if (ExecutionRules.CanEvaluate(e, Configuration.Version))
+                    {
+                        <a class="ms-2 small" href="executions/@e.ExecutionID/scoring">Score</a>
+                    }
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ShepherdApi.Execution> Executions { get; set; } = [];
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+    [Parameter] public bool ShowIteration { get; set; }
+}

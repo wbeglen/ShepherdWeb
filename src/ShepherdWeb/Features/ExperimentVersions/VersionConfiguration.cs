@@ -2,30 +2,34 @@ using ShepherdWeb.Infrastructure.Api.Generated;
 
 namespace ShepherdWeb.Features.ExperimentVersions;
 
-/// <summary>A version and everything it configures, as ShepherdAPI returned it.</summary>
-/// <param name="ExecutionCount">
-/// Executions recorded against the version's iterations. Under the approved lifecycle executions
-/// exist only on locked versions, but data recorded before that rule (and before R1 is enforced by
-/// ShepherdAPI) can have executions on an unlocked version.
-/// </param>
+/// <summary>A version, everything it configures, and the executions recorded against it, as ShepherdAPI returned them.</summary>
+/// <param name="Executions">All executions of the version's iterations, newest start first.</param>
 public sealed record VersionConfiguration(
     ExperimentVersion Version,
     IReadOnlyList<Iteration> Iterations,
     IReadOnlyList<Parameter> Parameters,
     IReadOnlyList<ScoreRule> ScoreRules,
-    int ExecutionCount)
+    IReadOnlyList<Execution> Executions)
 {
+    public int ExecutionCount => Executions.Count;
+
     /// <summary>
-    /// Configuration must not change once the version is locked or once any execution has used it
-    /// (docs/ARCHITECTURE.md §3, rules 2–3). The UI offers no configuration edits when this is true.
+    /// Configuration is immutable once the first execution exists, and everything is immutable once
+    /// the version is locked (docs/ARCHITECTURE.md §3, rules 3–4). The UI offers no configuration
+    /// edits when this is true. ShepherdAPI enforces only the lock part today (A1).
     /// </summary>
     public bool IsConfigurationFrozen => VersionLifecycle.IsLocked(Version) || ExecutionCount > 0;
+
+    /// <summary>True once any execution has ended, which is when score observations become relevant.</summary>
+    public bool HasEndedExecution => Executions.Any(e => e.EndUTC is not null);
+
+    public Iteration? IterationOf(Execution execution) => Iterations.FirstOrDefault(i => i.IterationID == execution.IterationID);
 }
 
 /// <summary>
 /// Loads a <see cref="VersionConfiguration"/> for the pages that show or edit it. The version,
-/// iterations, parameters and score rules load concurrently; executions are then counted per iteration
-/// (one call each, acceptable at MVP volume; R5 would make it one call).
+/// iterations, parameters and score rules load concurrently; executions are then listed per iteration
+/// (one call each, acceptable at MVP volume; A4 would make it one call).
 /// ScoreRules contains non-retired rules only; that is what ShepherdAPI's list returns.
 /// </summary>
 public sealed class VersionConfigurationLoader(
@@ -50,6 +54,6 @@ public sealed class VersionConfigurationLoader(
 
         return new VersionConfiguration(
             versionTask.Result, iterationsTask.Result, parametersTask.Result, scoreRulesTask.Result,
-            executionLists.Sum(list => list.Count));
+            executionLists.SelectMany(list => list).OrderByDescending(e => e.StartUTC).ToList());
     }
 }

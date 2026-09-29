@@ -1,0 +1,277 @@
+@page "/executions/{ExecutionId:long}"
+@inject ExecutionLoader Loader
+@inject StartExecutionWorkflow Workflow
+@inject ArtifactRegistrar Registrar
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+@inject IJSRuntime JS
+@inject IOptions<ConventionsOptions> Conventions
+
+<PageTitle>Execution @ExecutionId · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (view is { } v)
+{
+    var e = v.Execution;
+    <VersionHeader Version="v.Version" Current="@($"Execution #{e.ExecutionID}")" />
+
+    <div class="d-flex align-items-baseline gap-2 mb-2">
+        <h2 class="h5 mb-0">Execution #@e.ExecutionID</h2>
+        @if (v.HasEnded)
+        {
+            <span class="badge text-bg-secondary">ended</span>
+        }
+        else
+        {
+            <span class="badge text-bg-primary">in progress</span>
+        }
+        @if (e.InterventionCount > 0)
+        {
+            <span class="badge text-bg-warning">⚑ @e.InterventionCount intervention@(e.InterventionCount == 1 ? "" : "s")</span>
+        }
+    </div>
+
+    <dl class="row mb-3">
+        <dt class="col-sm-2">Iteration</dt>
+        <dd class="col-sm-10"><a href="versions/@v.Version.ExperimentVersionID/iterations/@v.Iteration.IterationID">@v.Iteration.Sequence. @v.Iteration.IterationLabel</a></dd>
+        <dt class="col-sm-2">Agent</dt><dd class="col-sm-10">@ReferenceData.AgentName(e.AgentID)</dd>
+        <dt class="col-sm-2">Phase</dt><dd class="col-sm-10">@ReferenceData.PhaseName(e.PhaseID)</dd>
+        <dt class="col-sm-2">Attempt</dt><dd class="col-sm-10">@e.AttemptNumber</dd>
+        <dt class="col-sm-2">Model / interface</dt><dd class="col-sm-10">@(e.ModelUsed ?? "—") / @(e.InterfaceUsed ?? "—")</dd>
+        <dt class="col-sm-2">Started</dt><dd class="col-sm-10"><UtcTimestamp Value="e.StartUTC" /></dd>
+        <dt class="col-sm-2">Ended</dt><dd class="col-sm-10"><UtcTimestamp Value="e.EndUTC" Missing="in progress" /></dd>
+        @if (!string.IsNullOrWhiteSpace(e.OutcomeNotes))
+        {
+            <dt class="col-sm-2">Outcome notes</dt><dd class="col-sm-10 text-prewrap">@e.OutcomeNotes</dd>
+        }
+        @if (!string.IsNullOrWhiteSpace(e.ArtifactURI))
+        {
+            <dt class="col-sm-2">Artifact URI <span class="badge text-bg-light">legacy</span></dt><dd class="col-sm-10">@e.ArtifactURI</dd>
+        }
+    </dl>
+
+    @* ---- Delivered prompt (AD-8: register before release) ---- *@
+    <section class="mb-4">
+        <h3 class="h6">Delivered prompt</h3>
+        @if (v.DeliveredPromptTypeId is null)
+        {
+            <div class="alert alert-danger py-2">There is no “@Conventions.Value.DeliveredPromptArtifactTypeName” artifact type, so the prompt cannot be registered. Create it under Reference data.</div>
+        }
+        else if (StartPrompt is null)
+        {
+            <div class="alert alert-danger py-2">
+                <strong>Delivered prompt not registered.</strong> The prompt cannot be copied until it is.
+                @if (!VersionLifecycle.IsLocked(v.Version))
+                {
+                    <button class="btn btn-sm btn-danger ms-2" disabled="@busy" @onclick="RegisterStartPromptAsync">Register it now</button>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="small text-secondary mb-2">
+                Registered <UtcTimestamp Value="StartPrompt.ReceivedUTC" /> · SHA-256 <Sha256Display Value="@(StartPrompt.ShA256 ?? "")" />
+                @if (promptMatchesIteration == false)
+                {
+                    <span class="text-danger ms-2">⚠ Differs from the iteration's current prompt. The configuration was changed outside ShepherdWeb.</span>
+                }
+            </div>
+            @if (v.CanEditRunFacts)
+            {
+                <button class="btn btn-primary" @onclick="() => CopyAsync(StartPrompt)">Copy prompt</button>
+                <span class="ms-2 small">@copyMessage</span>
+            }
+            <details class="mt-2">
+                <summary class="small">Show the registered prompt</summary>
+                <pre class="prompt-view prompt-preview">@startPromptText</pre>
+            </details>
+        }
+
+        @if (v.DeliveredPrompts.Count > 1)
+        {
+            <h4 class="h6 mt-3">Additional prompts delivered during interventions</h4>
+            <ul class="small">
+                @foreach (var extra in v.DeliveredPrompts.Skip(1))
+                {
+                    <li><UtcTimestamp Value="extra.ReceivedUTC" /> · <Sha256Display Value="@(extra.ShA256 ?? "")" /> · <a href="artifact-files/@extra.ArtifactID" target="_blank" rel="noopener">view</a></li>
+                }
+            </ul>
+        }
+    </section>
+
+    @* ---- In progress: hands off ---- *@
+    @if (v.CanEditRunFacts)
+    {
+        @if (mode == Mode.Ending || mode == Mode.Editing)
+        {
+            <RunFactsEditor Execution="e" Ending="@(mode == Mode.Ending)" OnSaved="SavedAsync" OnCancel="() => mode = Mode.None" />
+        }
+        else if (mode == Mode.AdditionalPrompt)
+        {
+            <section class="border rounded p-3 mb-3 form-narrow">
+                <h3 class="h6">Deliver additional prompt (intervention)</h3>
+                <p class="small text-secondary">
+                    Only when something unexpected needs human action. The exact text is registered as a delivered prompt before
+                    you can copy it. Record the intervention itself when the execution ends.
+                </p>
+                <textarea class="form-control prompt-editor mb-2" rows="6" @bind="additionalPrompt" @bind:event="oninput"></textarea>
+                <button class="btn btn-sm btn-warning" disabled="@(busy || string.IsNullOrWhiteSpace(additionalPrompt))" @onclick="RegisterAdditionalPromptAsync">Register prompt</button>
+                <button class="btn btn-sm btn-link" @onclick="() => mode = Mode.None">Cancel</button>
+            </section>
+        }
+        else
+        {
+            <p class="text-secondary">
+                Hands off: the agent is running. When it finishes, record the end.
+            </p>
+            <div class="d-flex flex-wrap gap-2 mb-4">
+                <button class="btn btn-primary" @onclick="() => mode = Mode.Ending">Execution ended…</button>
+                <button class="btn btn-outline-secondary btn-sm" @onclick="() => mode = Mode.Editing">Edit run facts</button>
+                <button class="btn btn-outline-warning btn-sm" @onclick="() => mode = Mode.AdditionalPrompt">Deliver additional prompt (intervention)…</button>
+            </div>
+        }
+
+        @if (lastAdditional is not null)
+        {
+            <div class="alert alert-info py-2">
+                Additional prompt registered.
+                <button class="btn btn-sm btn-primary ms-2" @onclick="() => CopyAsync(lastAdditional)">Copy it</button>
+                <span class="ms-2 small">@copyMessage</span>
+            </div>
+        }
+    }
+    else if (!v.HasEnded)
+    {
+        <div class="alert alert-secondary">The version was locked while this execution was in progress. It can no longer be ended or scored.</div>
+    }
+
+    @* ---- Ended: evaluation ---- *@
+    @if (v.HasEnded)
+    {
+        <section class="mb-4">
+            <div class="d-flex align-items-baseline gap-3">
+                <h3 class="h6 mb-2">Evaluation</h3>
+                <a class="small" href="executions/@e.ExecutionID/scoring">@(v.CanEvaluate ? "Score this execution" : "View scores")</a>
+            </div>
+            <ArtifactList ExecutionId="e.ExecutionID" Artifacts="v.EvaluationArtifacts" CanUpload="v.CanEvaluate" OnChanged="LoadAsync" />
+        </section>
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long ExecutionId { get; set; }
+
+    private enum Mode { None, Ending, Editing, AdditionalPrompt }
+
+    private ExecutionView? view;
+    private ApiProblem? problem;
+    private Mode mode;
+    private bool busy;
+    private string? startPromptText;
+    private bool? promptMatchesIteration;
+    private string additionalPrompt = string.Empty;
+    private ShepherdApi.Artifact? lastAdditional;
+    private string? copyMessage;
+    private long loadedId;
+
+    private ShepherdApi.Artifact? StartPrompt => view?.DeliveredPrompts.FirstOrDefault();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedId != ExecutionId)
+        {
+            loadedId = ExecutionId;
+            view = null;
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            view = await Loader.LoadAsync(ExecutionId);
+            startPromptText = StartPrompt is { } prompt ? await Registrar.ReadTextAsync(prompt) : null;
+
+            // Consistency check (AD-8): the start prompt must match the iteration's prompt, because
+            // configuration is frozen once an execution exists.
+            promptMatchesIteration = StartPrompt is null
+                ? null
+                : string.Equals(StartPrompt.ShA256, new PromptText(view.Iteration.Prompt).Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private async Task SavedAsync()
+    {
+        mode = Mode.None;
+        lastAdditional = null;
+        await LoadAsync();
+    }
+
+    private Task RegisterStartPromptAsync() => RunAsync(async () =>
+    {
+        await Workflow.RegisterStartPromptAsync(ExecutionId, view!.Iteration.IterationID, view.Iteration.Prompt ?? string.Empty);
+        await LoadAsync();
+    });
+
+    private Task RegisterAdditionalPromptAsync() => RunAsync(async () =>
+    {
+        var artifact = await Workflow.RegisterAdditionalPromptAsync(ExecutionId, additionalPrompt);
+        additionalPrompt = string.Empty;
+        mode = Mode.None;
+        await LoadAsync();
+        lastAdditional = artifact;
+        copyMessage = null;
+    });
+
+    // What is copied is read back from the store, so it is exactly the registered text (AD-8).
+    private async Task CopyAsync(ShepherdApi.Artifact artifact)
+    {
+        var text = await Registrar.ReadTextAsync(artifact);
+        if (text is null)
+        {
+            copyMessage = "The registered prompt file could not be read from the artifact store.";
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            copyMessage = $"Copied at {Utc.Format(Utc.Now)}.";
+        }
+        catch (JSException)
+        {
+            copyMessage = "The browser refused clipboard access. Open “Show the registered prompt” and copy it manually.";
+        }
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        busy = true;
+        problem = null;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (StartExecutionWorkflow.IsRegistrationFailure(ex))
+        {
+            problem = ApiErrorMapper.IsApiFailure(ex)
+                ? Errors.Map(ex)
+                : new ApiProblem(ApiProblemKind.Unexpected, "Prompt not registered", ex.Message);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

@@ -1,0 +1,96 @@
+@* Links an observation to the execution's artifacts as evidence (ScoreObservationEvidence). Only the
+   same execution's artifacts are offered, matching ShepherdAPI's own check. Links can be added and
+   removed until the version is locked; notes are set when a link is added. *@
+@inject ShepherdApi.IScoreObservationsClient Observations
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+@if (Artifacts.Count == 0)
+{
+    <p class="small text-secondary mb-0">This execution has no artifacts yet. Add them on the execution page.</p>
+}
+else
+{
+    <ProblemDisplay Problem="problem" />
+    <table class="table table-sm mb-0">
+        <tbody>
+            @foreach (var artifact in Artifacts)
+            {
+                var link = Evidence.FirstOrDefault(l => l.ArtifactID == artifact.ArtifactID);
+                <tr>
+                    <td style="width: 2rem">
+                        <input type="checkbox" class="form-check-input" checked="@(link is not null)" disabled="@busy"
+                               aria-label="Use @artifact.OriginalName as evidence" @onchange="() => ToggleAsync(artifact, link)" />
+                    </td>
+                    <td>
+                        <a href="artifact-files/@artifact.ArtifactID" target="_blank" rel="noopener">@artifact.OriginalName</a>
+                        <span class="small text-secondary">· @ReferenceData.ArtifactTypeName(artifact.ArtifactTypeID)</span>
+                    </td>
+                    <td>
+                        @if (link is not null)
+                        {
+                            <span class="small">@link.EvidenceNotes</span>
+                        }
+                        else
+                        {
+                            <input class="form-control form-control-sm" placeholder="Evidence notes (optional)" maxlength="500"
+                                   aria-label="Evidence notes for @artifact.OriginalName" @bind="notes[artifact.ArtifactID]" />
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter, EditorRequired] public ShepherdApi.ScoreObservation Observation { get; set; } = default!;
+    [Parameter, EditorRequired] public IReadOnlyList<ShepherdApi.Artifact> Artifacts { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<ShepherdApi.ScoreObservationEvidence> Evidence { get; set; } = [];
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private readonly Dictionary<long, string?> notes = new();
+    private ApiProblem? problem;
+    private bool busy;
+
+    protected override void OnParametersSet()
+    {
+        foreach (var artifact in Artifacts)
+        {
+            notes.TryAdd(artifact.ArtifactID, null);
+        }
+    }
+
+    private async Task ToggleAsync(ShepherdApi.Artifact artifact, ShepherdApi.ScoreObservationEvidence? link)
+    {
+        busy = true;
+        problem = null;
+        try
+        {
+            if (link is null)
+            {
+                var text = notes[artifact.ArtifactID];
+                await Observations.EvidencePostAsync(Observation.ScoreObservationID, new ShepherdApi.CreateScoreObservationEvidenceRequest
+                {
+                    ArtifactID = artifact.ArtifactID,
+                    EvidenceNotes = string.IsNullOrWhiteSpace(text) ? null : text.Trim(),
+                });
+                notes[artifact.ArtifactID] = null;
+            }
+            else
+            {
+                await Observations.EvidenceDeleteAsync(Observation.ScoreObservationID, artifact.ArtifactID);
+            }
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            busy = false;
+        }
+
+        await OnChanged.InvokeAsync(); // Re-read the links either way, so the checkboxes show what ShepherdAPI holds.
+    }
+}

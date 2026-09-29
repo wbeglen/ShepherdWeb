@@ -14,6 +14,7 @@ public sealed class StubShepherdApi : HttpMessageHandler
 {
     private readonly Dictionary<string, Func<HttpRequestMessage, HttpResponseMessage>> _routes = new();
 
+    /// <summary>Every request received. Requests arrive concurrently (ReferenceData loads six lists at once), so appends are locked.</summary>
     public List<(HttpMethod Method, string Path, string? Body)> Requests { get; } = [];
 
     public StubShepherdApi On(HttpMethod method, string path, HttpStatusCode status, string? json = null) =>
@@ -72,7 +73,10 @@ public sealed class StubShepherdApi : HttpMessageHandler
 
         var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
         var path = request.RequestUri!.AbsolutePath;
-        Requests.Add((request.Method, path, body));
+        lock (Requests)
+        {
+            Requests.Add((request.Method, path, body));
+        }
 
         if (Unreachable)
         {

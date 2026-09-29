@@ -1,0 +1,282 @@
+@page "/executions/{ExecutionId:long}/scoring"
+@inject ExecutionLoader Loader
+@inject ShepherdApi.IScoreObservationsClient Observations
+@inject ShepherdApi.IScoreRulesClient ScoreRules
+@inject ReferenceData ReferenceData
+@inject IPreferenceStore Preferences
+@inject ApiErrorMapper Errors
+
+<PageTitle>Scoring · Execution @ExecutionId · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (view is { } v)
+{
+    var e = v.Execution;
+    <VersionHeader Version="v.Version" Current="@($"Scoring execution #{e.ExecutionID}")" />
+    <p>
+        <a href="executions/@e.ExecutionID">Execution #@e.ExecutionID</a> ·
+        @v.Iteration.Sequence. @v.Iteration.IterationLabel · @ReferenceData.AgentName(e.AgentID) ·
+        @ReferenceData.PhaseName(e.PhaseID) · attempt @e.AttemptNumber
+    </p>
+
+    @if (!v.HasEnded)
+    {
+        <p class="text-secondary">Scoring is available after the execution ends (it is still in progress).</p>
+    }
+    else
+    {
+        @if (!v.CanEvaluate)
+        {
+            <div class="alert alert-secondary py-2">This version is locked. Scores and evidence are final.</div>
+        }
+        else
+        {
+            <div class="form-narrow mb-3">
+                <label class="form-label" for="rater">Rater</label>
+                <select id="rater" class="form-select" value="@raterId" @onchange="RaterChangedAsync">
+                    <option value="0">Choose…</option>
+                    @foreach (var r in ReferenceData.Raters)
+                    {
+                        <option value="@r.RaterID">@r.Name</option>
+                    }
+                </select>
+            </div>
+
+            @if (raterId == 0)
+            {
+                <p class="text-secondary">Choose a rater to enter scores.</p>
+            }
+            else if (rows.Count == 0)
+            {
+                <p class="text-secondary">This version has no score rules for the @ReferenceData.PhaseName(e.PhaseID) phase.</p>
+            }
+            else
+            {
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr><th>Category</th><th>Better</th><th class="text-end">Weight %</th><th>Range</th><th style="width: 8rem">Score</th><th>Notes</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in rows)
+                        {
+                            <tr>
+                                <td>@ReferenceData.ScoreCategoryName(row.Rule.ScoreCategoryID)</td>
+                                <td>@Better(row.Rule.ScoreCategoryID)</td>
+                                <td class="text-end">@row.Rule.WeightPercent.ToString("0.##")</td>
+                                <td class="text-nowrap">@row.Rule.MinScore – @row.Rule.MaxScore</td>
+                                <td>
+                                    <input type="number" class="form-control form-control-sm" step="0.01" min="@row.Rule.MinScore" max="@row.Rule.MaxScore"
+                                           aria-label="Score for @ReferenceData.ScoreCategoryName(row.Rule.ScoreCategoryID)" @bind="row.Score" />
+                                </td>
+                                <td><input class="form-control form-control-sm" aria-label="Notes" @bind="row.Notes" /></td>
+                                <td class="text-nowrap">
+                                    <button class="btn btn-sm btn-primary" disabled="@(row.Saving || !row.IsDirty)" @onclick="() => SaveAsync(row)">
+                                        @(row.Observation is null ? "Save" : "Save correction")
+                                    </button>
+                                    @if (row.Observation is not null)
+                                    {
+                                        <button class="btn btn-sm btn-link" @onclick="() => ToggleEvidenceAsync(row)">Evidence@(row.Evidence is null ? "" : $" ({row.Evidence.Count})")</button>
+                                    }
+                                    <div class="small @(row.Message?.StartsWith("Saved") == true ? "text-success" : "text-danger")">@row.Message</div>
+                                </td>
+                            </tr>
+                            @if (row.ShowEvidence && row.Observation is not null)
+                            {
+                                <tr>
+                                    <td colspan="7" class="bg-body-tertiary">
+                                        <EvidenceLinks Observation="row.Observation" Artifacts="v.Artifacts" Evidence="row.Evidence ?? []"
+                                                       OnChanged="() => ReloadEvidenceAsync(row)" />
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+
+        <h3 class="h6 mt-4">All scores for this execution</h3>
+        @if (allObservations.Count == 0)
+        {
+            <p class="text-secondary">None yet.</p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead><tr><th>Category</th><th>Rater</th><th class="text-end">Score</th><th>Observed</th><th>Notes</th></tr></thead>
+                <tbody>
+                    @foreach (var o in allObservations)
+                    {
+                        <tr>
+                            <td>@RuleLabel(o.ScoreRuleID)</td>
+                            <td>@ReferenceData.RaterName(o.RaterID)</td>
+                            <td class="text-end">@o.ObservedScore.ToString("0.##")</td>
+                            <td><UtcTimestamp Value="o.ObservedUTC" /></td>
+                            <td class="small text-prewrap">@o.ObservationNotes</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long ExecutionId { get; set; }
+
+    private ExecutionView? view;
+    private IReadOnlyList<ShepherdApi.ScoreObservation> allObservations = [];
+    private readonly Dictionary<int, ShepherdApi.ScoreRule> rulesById = new();
+    private List<ScoreRow> rows = [];
+    private int raterId;
+    private ApiProblem? problem;
+    private bool preferenceApplied;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var viewTask = Loader.LoadAsync(ExecutionId);
+            var observationsTask = Observations.ScoreObservationsGetAsync(executionId: ExecutionId);
+            await Task.WhenAll(viewTask, observationsTask);
+            view = viewTask.Result;
+            allObservations = observationsTask.Result;
+
+            foreach (var rule in view.Configuration.ScoreRules)
+            {
+                rulesById[rule.ScoreRuleID] = rule;
+            }
+
+            // Observations can reference rules that were retired later; the version's list omits them.
+            foreach (var missing in allObservations.Select(o => o.ScoreRuleID).Distinct().Where(id => !rulesById.ContainsKey(id)))
+            {
+                rulesById[missing] = await ScoreRules.ScoreRulesGetAsync(missing);
+            }
+
+            BuildRows();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (preferenceApplied || view is null)
+        {
+            return;
+        }
+
+        preferenceApplied = true;
+        if (raterId == 0 && int.TryParse(await Preferences.GetAsync(PreferenceKeys.Rater), out var saved) &&
+            ReferenceData.Raters.Any(r => r.RaterID == saved))
+        {
+            raterId = saved;
+            BuildRows();
+            StateHasChanged();
+        }
+    }
+
+    private async Task RaterChangedAsync(ChangeEventArgs args)
+    {
+        raterId = int.TryParse(args.Value?.ToString(), out var id) ? id : 0;
+        BuildRows();
+        if (raterId != 0)
+        {
+            await Preferences.SetAsync(PreferenceKeys.Rater, raterId.ToString());
+        }
+    }
+
+    private void BuildRows()
+    {
+        if (view is null || raterId == 0)
+        {
+            rows = [];
+            return;
+        }
+
+        rows = ExecutionRules.RulesFor(view.Execution, view.Configuration.ScoreRules)
+            .Select(rule => new ScoreRow(rule, allObservations.FirstOrDefault(o => o.ScoreRuleID == rule.ScoreRuleID && o.RaterID == raterId)))
+            .ToList();
+    }
+
+    private async Task SaveAsync(ScoreRow row)
+    {
+        // Client-side check only: ShepherdAPI does not validate the range yet (A3).
+        if (row.Problem is { } scoreProblem)
+        {
+            row.Message = scoreProblem;
+            return;
+        }
+
+        row.Saving = true;
+        row.Message = null;
+        try
+        {
+            var saved = row.Observation is null
+                ? await Observations.ScoreObservationsPostAsync(row.ToCreateRequest(ExecutionId, raterId))
+                : await Observations.ContentAsync(row.Observation.ScoreObservationID, row.ToUpdateRequest());
+            row.Saved(saved);
+            row.Message = $"Saved {Utc.Format(Utc.Now)}";
+            allObservations = await Observations.ScoreObservationsGetAsync(executionId: ExecutionId);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            row.Message = mapped.Kind == ApiProblemKind.Conflict
+                ? "This rater already has a score for this rule. Reload the page to correct it."
+                : mapped.Detail ?? mapped.Title;
+            if (mapped.Kind == ApiProblemKind.RecordLocked)
+            {
+                await LoadAsync();
+            }
+        }
+        finally
+        {
+            row.Saving = false;
+        }
+    }
+
+    private async Task ToggleEvidenceAsync(ScoreRow row)
+    {
+        row.ShowEvidence = !row.ShowEvidence;
+        if (row.ShowEvidence)
+        {
+            await ReloadEvidenceAsync(row);
+        }
+    }
+
+    private async Task ReloadEvidenceAsync(ScoreRow row)
+    {
+        try
+        {
+            row.Evidence = await Observations.EvidenceGetAsync(row.Observation!.ScoreObservationID);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            row.Message = Errors.Map(ex).Title;
+        }
+    }
+
+    private string RuleLabel(int scoreRuleId) =>
+        rulesById.TryGetValue(scoreRuleId, out var rule)
+            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID) + (rule.RowState == "D" ? " (retired rule)" : "")
+            : $"Rule #{scoreRuleId}";
+
+    private string Better(int scoreCategoryId) =>
+        ReferenceData.ScoreCategories.FirstOrDefault(c => c.ScoreCategoryID == scoreCategoryId)?.HigherIsBetter switch
+        {
+            true => "higher",
+            false => "lower",
+            null => "?",
+        };
+}

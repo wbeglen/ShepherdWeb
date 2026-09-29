@@ -1,0 +1,49 @@
+@* The Executions tab of a version: executions still in progress first (so one left running is easy
+   to find), then all executions grouped by iteration. *@
+@inject ReferenceData ReferenceData
+@inject IOptions<ConventionsOptions> Conventions
+
+@if (blockedReason is null)
+{
+    <a class="btn btn-sm btn-primary mb-3" href="versions/@Configuration.Version.ExperimentVersionID/executions/new">Start execution…</a>
+}
+else
+{
+    <p class="text-secondary">@blockedReason</p>
+}
+
+@if (Configuration.Executions.Count == 0)
+{
+    <p class="text-secondary">No executions yet.</p>
+}
+else
+{
+    var inProgress = Configuration.Executions.Where(e => !ExecutionRules.HasEnded(e)).ToList();
+    @if (inProgress.Count > 0)
+    {
+        <h2 class="h6">In progress</h2>
+        <ExecutionTable Executions="inProgress" Configuration="Configuration" ShowIteration="true" />
+    }
+
+    @foreach (var iteration in Configuration.Iterations)
+    {
+        var executions = Configuration.Executions.Where(e => e.IterationID == iteration.IterationID).ToList();
+        if (executions.Count == 0)
+        {
+            continue;
+        }
+
+        <h2 class="h6 mt-3">@iteration.Sequence. @iteration.IterationLabel</h2>
+        <ExecutionTable Executions="executions" Configuration="Configuration" />
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+
+    private string? blockedReason;
+
+    protected override void OnParametersSet() =>
+        blockedReason = ExecutionRules.StartBlockedReason(
+            Configuration, ReferenceData.StatusName(Configuration.Version.StatusID), Conventions.Value);
+}

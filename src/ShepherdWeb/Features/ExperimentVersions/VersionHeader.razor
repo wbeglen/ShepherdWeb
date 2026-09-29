@@ -26,16 +26,16 @@
 @if (VersionLifecycle.IsLocked(Version))
 {
     <div class="alert alert-secondary py-2" role="status">
-        🔒 Configuration locked at <UtcTimestamp Value="Version.LockedUTC" />. It can no longer be changed.
+        🔒 Locked at <UtcTimestamp Value="Version.LockedUTC" />. This record is final: configuration, executions, artifacts, scores and evidence can no longer be changed.
     </div>
 }
 
+@* The normal state while executions and scoring are underway (docs/ARCHITECTURE.md §3, revision 4). *@
 @if (!VersionLifecycle.IsLocked(Version) && ExecutionCount > 0)
 {
-    <div class="alert alert-warning py-2" role="alert">
-        ⚠ This version has @ExecutionCount execution@(ExecutionCount == 1 ? "" : "s") but is not locked. Its configuration is
-        shown read-only, because changing it would change what those executions appear to have used. Lock it to make
-        that permanent.
+    <div class="alert alert-info py-2" role="status">
+        Executing: @ExecutionCount execution@(ExecutionCount == 1 ? "" : "s") recorded. The configuration is frozen, because
+        changing it would change what those executions used. Executions and scoring continue until the version is locked.
     </div>
 }
 

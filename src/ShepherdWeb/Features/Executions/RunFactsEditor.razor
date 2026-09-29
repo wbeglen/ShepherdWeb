@@ -1,0 +1,167 @@
+@* Writes an execution's run facts (docs/ARCHITECTURE.md §8.2). In "ending" mode it sets EndUTC,
+   after which ShepherdAPI freezes the run facts; otherwise it corrects them while the execution is in
+   progress. Outcome notes are kept as a browser draft while typing (AD-11). *@
+@implements IDisposable
+@inject ShepherdApi.IExecutionsClient Executions
+@inject IDraftStore Drafts
+@inject ApiErrorMapper Errors
+
+<section class="border rounded p-3 mb-3 form-narrow">
+    <h2 class="h6">@(Ending ? "Execution ended" : "Edit run facts")</h2>
+    <ProblemDisplay Problem="problem" />
+    <DraftRestoreBar Draft="offeredDraft" What="outcome notes" OnRestore="RestoreDraft" OnDiscard="DiscardDraftAsync" />
+
+    <EditForm Model="model" OnValidSubmit="SubmitAsync">
+        <DataAnnotationsValidator />
+        <ApiValidation @ref="apiValidation" />
+        <ValidationSummary />
+
+        @if (Ending)
+        {
+            <div class="mb-3">
+                <label class="form-label" for="run-end">End time (UTC)</label>
+                <div class="input-group">
+                    <InputDate id="run-end" Type="InputDateType.DateTimeLocal" class="form-control" @bind-Value="model.EndUtc" />
+                    <button type="button" class="btn btn-outline-secondary" @onclick="() => model.EndUtc = Utc.Now">Now</button>
+                </div>
+                <div class="form-text">When the agent finished. Started <UtcTimestamp Value="Execution.StartUTC" />.</div>
+            </div>
+        }
+        <div class="row g-2 mb-3">
+            <div class="col-md-5">
+                <label class="form-label" for="run-model">Model used</label>
+                <InputText id="run-model" class="form-control" @bind-Value="model.ModelUsed" />
+            </div>
+            <div class="col-md-4">
+                <label class="form-label" for="run-interface">Interface used</label>
+                <InputText id="run-interface" class="form-control" @bind-Value="model.InterfaceUsed" />
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="run-interventions">Interventions</label>
+                <InputNumber id="run-interventions" class="form-control" @bind-Value="model.InterventionCount" />
+            </div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="run-notes">Outcome notes</label>
+            <InputTextArea id="run-notes" class="form-control" rows="4" @bind-Value="model.OutcomeNotes" @bind-Value:after="NotesEdited" />
+            @if (model.InterventionCount > 0)
+            {
+                <div class="form-text text-warning-emphasis">Describe what the intervention was and why it was needed.</div>
+            }
+        </div>
+
+        <button type="submit" class="btn @(Ending ? "btn-primary" : "btn-outline-primary")" disabled="@saving">
+            @(Ending ? "End execution…" : "Save")
+        </button>
+        <button type="button" class="btn btn-link" @onclick="OnCancel">Cancel</button>
+    </EditForm>
+</section>
+
+<ConfirmDialog Visible="confirming" Title="End this execution?" ConfirmText="End execution" Busy="saving"
+               OnConfirm="SaveAsync" OnCancel="() => confirming = false">
+    End time, model, interface, intervention count (@model.InterventionCount) and outcome notes become permanent.
+    Scoring and evidence remain possible until the version is locked.
+</ConfirmDialog>
+
+@code {
+    [Parameter, EditorRequired] public ShepherdApi.Execution Execution { get; set; } = default!;
+    [Parameter] public bool Ending { get; set; }
+    [Parameter] public EventCallback OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private RunFactsModel model = new();
+    private ApiValidation? apiValidation;
+    private ApiProblem? problem;
+    private bool saving;
+    private bool confirming;
+
+    private Draft? offeredDraft;
+    private bool draftChecked;
+    private CancellationTokenSource? draftSaveDelay;
+
+    private string DraftKey => $"execution:{Execution.ExecutionID}:outcome-notes";
+
+    protected override void OnInitialized() => model = RunFactsModel.From(Execution, Ending);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (draftChecked)
+        {
+            return;
+        }
+
+        draftChecked = true;
+        var draft = await Drafts.LoadAsync(DraftKey);
+        if (draft is not null && !string.Equals(draft.Text, model.OutcomeNotes ?? string.Empty, StringComparison.Ordinal))
+        {
+            offeredDraft = draft;
+            StateHasChanged();
+        }
+    }
+
+    private void RestoreDraft()
+    {
+        model.OutcomeNotes = offeredDraft!.Text;
+        offeredDraft = null;
+    }
+
+    private async Task DiscardDraftAsync()
+    {
+        offeredDraft = null;
+        await Drafts.DeleteAsync(DraftKey);
+    }
+
+    private async Task NotesEdited()
+    {
+        draftSaveDelay?.Cancel();
+        draftSaveDelay = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(800), draftSaveDelay.Token);
+            await Drafts.SaveAsync(DraftKey, model.OutcomeNotes ?? string.Empty);
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    // Ending is irreversible, so it is confirmed first; a correction is saved directly.
+    private Task SubmitAsync()
+    {
+        if (Ending)
+        {
+            confirming = true;
+            return Task.CompletedTask;
+        }
+
+        return SaveAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        problem = null;
+        draftSaveDelay?.Cancel();
+        try
+        {
+            await Executions.RunFactsAsync(Execution.ExecutionID, model.ToRequest());
+            await Drafts.DeleteAsync(DraftKey);
+            await OnSaved.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            var mapped = Errors.Map(ex);
+            if (apiValidation?.TryShow(mapped) != true)
+            {
+                problem = mapped;
+            }
+        }
+        finally
+        {
+            saving = false;
+            confirming = false;
+        }
+    }
+
+    public void Dispose() => draftSaveDelay?.Cancel();
+}

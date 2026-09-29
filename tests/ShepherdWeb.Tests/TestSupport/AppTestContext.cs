@@ -3,22 +3,29 @@ using Bunit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ShepherdWeb.Features.Artifacts;
+using ShepherdWeb.Features.Executions;
 using ShepherdWeb.Features.ExperimentVersions;
 using ShepherdWeb.Infrastructure;
 using ShepherdWeb.Infrastructure.Api;
 using ShepherdWeb.Infrastructure.Api.Generated;
+using ShepherdWeb.Infrastructure.ArtifactStore;
 using ShepherdWeb.Infrastructure.Drafts;
+using ShepherdWeb.Infrastructure.Preferences;
 
 namespace ShepherdWeb.Tests.TestSupport;
 
 /// <summary>
 /// A bUnit context wired like the real app: the real generated clients over <see cref="StubShepherdApi"/>,
-/// ReferenceData, ApiErrorMapper, conventions, and an in-memory draft store.
+/// ReferenceData, ApiErrorMapper, conventions, in-memory drafts and preferences, and a real artifact
+/// store in a temporary folder that is deleted afterwards.
 /// </summary>
 public abstract class AppTestContext : BunitContext
 {
     protected StubShepherdApi Api { get; } = new();
     protected InMemoryDraftStore Drafts { get; } = new();
+    protected InMemoryPreferenceStore Preferences { get; } = new();
+    protected string ArtifactRoot { get; } = Path.Combine(Path.GetTempPath(), "shepherdweb-tests", Guid.NewGuid().ToString("N"));
 
     protected AppTestContext()
     {
@@ -27,8 +34,13 @@ public abstract class AppTestContext : BunitContext
         Services.AddSingleton(Options.Create(new ConventionsOptions()));
         Services.AddSingleton(new ApiErrorMapper(NullLogger<ApiErrorMapper>.Instance));
         Services.AddSingleton<IDraftStore>(Drafts);
+        Services.AddSingleton<IPreferenceStore>(Preferences);
+        Services.AddSingleton(Options.Create(new ArtifactStoreOptions { RootPath = ArtifactRoot }));
+        Services.AddSingleton<ArtifactFileStore>();
 
         Services.AddSingleton<IAgentsClient>(new AgentsClient(http));
+        Services.AddSingleton<IArtifactsClient>(new ArtifactsClient(http));
+        Services.AddSingleton<IScoreObservationsClient>(new ScoreObservationsClient(http));
         Services.AddSingleton<IArtifactTypesClient>(new ArtifactTypesClient(http));
         Services.AddSingleton<IExperimentVersionsClient>(new ExperimentVersionsClient(http));
         Services.AddSingleton<IExecutionsClient>(new ExecutionsClient(http));
@@ -41,11 +53,26 @@ public abstract class AppTestContext : BunitContext
         Services.AddSingleton<IStatusesClient>(new StatusesClient(http));
         Services.AddScoped<ReferenceData>();
         Services.AddScoped<VersionConfigurationLoader>();
+        Services.AddScoped<ExecutionLoader>();
+        Services.AddScoped<ArtifactRegistrar>();
+        Services.AddScoped<StartExecutionWorkflow>();
 
         Api.WithEmptyLookups()
             .On(HttpMethod.Get, "/api/statuses", HttpStatusCode.OK, Json.Statuses)
             .On(HttpMethod.Get, "/api/phases", HttpStatusCode.OK, Json.Phases)
-            .On(HttpMethod.Get, "/api/score-categories", HttpStatusCode.OK, Json.ScoreCategories);
+            .On(HttpMethod.Get, "/api/score-categories", HttpStatusCode.OK, Json.ScoreCategories)
+            .On(HttpMethod.Get, "/api/agents", HttpStatusCode.OK, Json.Agents)
+            .On(HttpMethod.Get, "/api/raters", HttpStatusCode.OK, Json.Raters)
+            .On(HttpMethod.Get, "/api/artifact-types", HttpStatusCode.OK, Json.ArtifactTypes);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing && Directory.Exists(ArtifactRoot))
+        {
+            Directory.Delete(ArtifactRoot, recursive: true);
+        }
     }
 
     /// <summary>Loads ReferenceData up front, as the pages do before rendering version components.</summary>
@@ -69,6 +96,19 @@ public abstract class AppTestContext : BunitContext
 
     protected async Task<VersionConfiguration> LoadConfigurationAsync() =>
         await Services.GetRequiredService<VersionConfigurationLoader>().LoadAsync(1);
+}
+
+public sealed class InMemoryPreferenceStore : IPreferenceStore
+{
+    public Dictionary<string, string> Items { get; } = new();
+
+    public Task<string?> GetAsync(string key) => Task.FromResult(Items.GetValueOrDefault(key));
+
+    public Task SetAsync(string key, string value)
+    {
+        Items[key] = value;
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class InMemoryDraftStore : IDraftStore
@@ -112,6 +152,26 @@ public static class Json
 
     public const string OneExecution =
         """[{"executionID":11,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T09:00:00","endUTC":"2026-09-02T10:00:00","interventionCount":0,"attemptNumber":1}]""";
+
+    public const string OneExecutionInProgress =
+        """[{"executionID":12,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T09:00:00","endUTC":null,"interventionCount":0,"attemptNumber":1}]""";
+
+    public const string Agents =
+        """[{"agentID":1,"name":"Claude","provider":"Anthropic","defaultModel":"model-x","defaultInterface":"Desktop","active":true}]""";
+
+    public const string Raters = """[{"raterID":1,"name":"Bill","raterType":"Human","agentID":null}]""";
+
+    public const int DeliveredPromptType = 1, LogType = 2;
+
+    public const string ArtifactTypes =
+        """[{"artifactTypeID":1,"name":"DeliveredPrompt"},{"artifactTypeID":2,"name":"Log"}]""";
+
+    /// <summary>Execution 11 (iteration 7, agent 1, phase 1) with the given end.</summary>
+    public static string Execution(bool ended) =>
+        $$"""{"executionID":11,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T09:00:00","endUTC":{{(ended ? "\"2026-09-02T10:00:00\"" : "null")}},"modelUsed":"model-x","interfaceUsed":"Desktop","interventionCount":0,"attemptNumber":1}""";
+
+    public const string OneIterationSingle =
+        """{"iterationID":7,"experimentVersionID":1,"sequence":1,"iterationLabel":"First","prompt":"Build the thing.","scenario":null,"notes":null}""";
 
     public const string OneParameter =
         """[{"parameterID":3,"experimentVersionID":1,"name":"Timeout","value":"30","unit":"min","notes":null}]""";

@@ -1,9 +1,7 @@
 @page "/versions/{VersionId:long}/review"
 @inject VersionConfigurationLoader Loader
-@inject ShepherdApi.IExperimentVersionsClient Versions
 @inject ReferenceData ReferenceData
 @inject ApiErrorMapper Errors
-@inject IOptions<ConventionsOptions> Conventions
 
 <PageTitle>Review configuration · ShepherdWeb</PageTitle>
 
@@ -16,11 +14,6 @@
 
     <VersionHeader Version="version" ExecutionCount="config.ExecutionCount" Current="Review" />
 
-    @if (justLocked)
-    {
-        <div class="alert alert-success" role="status">Locked. The configuration below is now permanent.</div>
-    }
-
     <p class="text-secondary">
         @if (locked)
         {
@@ -28,7 +21,10 @@
         }
         else
         {
-            <text>The complete configuration of this version. Check all of it before locking: once locked, none of it can be changed.</text>
+            <text>
+                The complete configuration of this version. Check all of it before starting the first execution:
+                from then on none of it can be changed. <a href="versions/@version.ExperimentVersionID">Back to the version</a>
+            </text>
         }
     </p>
 
@@ -122,29 +118,6 @@
         }
     </section>
 
-    @if (!locked)
-    {
-        <div class="border-top pt-3">
-            <button class="btn btn-danger" disabled="@(lockStatus is null)" @onclick="() => confirming = true">Lock this version…</button>
-            @if (lockStatus is null)
-            {
-                <span class="text-danger ms-2">There is no “@Conventions.Value.LockedStatusName” status. Create it under Reference data first.</span>
-            }
-        </div>
-
-        <ConfirmDialog Visible="confirming" Title="Lock this version?" ConfirmText="Lock permanently" ConfirmClass="btn-danger"
-                       Busy="locking" OnConfirm="LockAsync" OnCancel="() => confirming = false">
-            <p><strong>@version.Name @version.VersionLabel</strong></p>
-            <ul>
-                <li>@config.Iterations.Count iterations, @config.Parameters.Count parameters, @config.ScoreRules.Count score rules</li>
-                <li>Status becomes “@Conventions.Value.LockedStatusName”.</li>
-            </ul>
-            <p class="mb-0">
-                The configuration becomes permanent and executions become possible.
-                <strong>This cannot be undone through ShepherdWeb or ShepherdAPI.</strong>
-            </p>
-        </ConfirmDialog>
-    }
 }
 else if (problem is null)
 {
@@ -155,11 +128,7 @@ else if (problem is null)
     [Parameter] public long VersionId { get; set; }
 
     private VersionConfiguration? configuration;
-    private ShepherdApi.Status? lockStatus;
     private ApiProblem? problem;
-    private bool confirming;
-    private bool locking;
-    private bool justLocked;
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -171,7 +140,6 @@ else if (problem is null)
             var loadTask = Loader.LoadAsync(VersionId);
             await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
             configuration = loadTask.Result;
-            lockStatus = ReferenceData.FindStatus(Conventions.Value.LockedStatusName);
         }
         catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
         {
@@ -186,25 +154,4 @@ else if (problem is null)
             false => "lower",
             null => "?",
         };
-
-    private async Task LockAsync()
-    {
-        locking = true;
-        problem = null;
-        try
-        {
-            await Versions.LockAsync(VersionId, new ShepherdApi.LockExperimentVersionRequest { StatusID = lockStatus!.StatusID });
-            justLocked = true;
-            await LoadAsync(); // Show the configuration as ShepherdAPI now holds it.
-        }
-        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
-        {
-            problem = Errors.Map(ex);
-        }
-        finally
-        {
-            locking = false;
-            confirming = false;
-        }
-    }
 }

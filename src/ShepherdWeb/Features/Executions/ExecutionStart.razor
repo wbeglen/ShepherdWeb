@@ -1,0 +1,249 @@
+@page "/versions/{VersionId:long}/executions/new"
+@inject VersionConfigurationLoader Loader
+@inject StartExecutionWorkflow Workflow
+@inject ReferenceData ReferenceData
+@inject IPreferenceStore Preferences
+@inject ApiErrorMapper Errors
+@inject IOptions<ConventionsOptions> Conventions
+@inject NavigationManager Navigation
+
+<PageTitle>Start execution · ShepherdWeb</PageTitle>
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (configuration is { } config)
+{
+    <VersionHeader Version="config.Version" Current="Start execution" />
+
+    @if (blockedReason is not null)
+    {
+        <p>@blockedReason <a href="versions/@VersionId?tab=executions">Back to executions</a></p>
+    }
+    else
+    {
+        <p class="text-secondary">
+            Choose what to run and check the prompt. Nothing is recorded until you click Start. After that the execution
+            cannot be deleted, and its iteration, agent, phase, attempt and start time cannot be changed.
+        </p>
+
+        <EditForm Model="form" OnValidSubmit="() => confirming = true">
+            <DataAnnotationsValidator />
+            <ValidationSummary />
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <label class="form-label" for="exec-iteration">Iteration</label>
+                    <InputSelect id="exec-iteration" class="form-select" @bind-Value="form.IterationID" @bind-Value:after="SuggestAttempt">
+                        <option value="0">Choose…</option>
+                        @foreach (var i in config.Iterations)
+                        {
+                            <option value="@i.IterationID">@i.Sequence. @i.IterationLabel</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="exec-agent">Agent</label>
+                    <InputSelect id="exec-agent" class="form-select" @bind-Value="form.AgentID" @bind-Value:after="AgentChanged">
+                        <option value="0">Choose…</option>
+                        @foreach (var a in ReferenceData.Agents.Where(a => a.Active))
+                        {
+                            <option value="@a.AgentID">@a.Name</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="exec-phase">Phase</label>
+                    <InputSelect id="exec-phase" class="form-select" @bind-Value="form.PhaseID" @bind-Value:after="SuggestAttempt">
+                        <option value="0">Choose…</option>
+                        @foreach (var p in ReferenceData.Phases)
+                        {
+                            <option value="@p.PhaseID">@p.Name</option>
+                        }
+                    </InputSelect>
+                </div>
+            </div>
+            <div class="row g-3 mb-3">
+                <div class="col-md-2">
+                    <label class="form-label" for="exec-attempt">Attempt</label>
+                    <InputNumber id="exec-attempt" class="form-control" @bind-Value="form.AttemptNumber" />
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label" for="exec-model">Model used</label>
+                    <InputText id="exec-model" class="form-control" @bind-Value="form.ModelUsed" />
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label" for="exec-interface">Interface used</label>
+                    <InputText id="exec-interface" class="form-control" @bind-Value="form.InterfaceUsed" />
+                </div>
+            </div>
+            <div class="mb-3">
+                <div class="form-check">
+                    <InputCheckbox id="exec-start-now" class="form-check-input" @bind-Value="form.StartWhenClicked" />
+                    <label class="form-check-label" for="exec-start-now">Start time is the moment I click Start</label>
+                </div>
+                @if (!form.StartWhenClicked)
+                {
+                    <div class="mt-2 form-narrow">
+                        <label class="form-label" for="exec-start">Start time (UTC)</label>
+                        <InputDate id="exec-start" Type="InputDateType.DateTimeLocal" class="form-control" @bind-Value="form.StartUtc" />
+                    </div>
+                }
+            </div>
+
+            @if (SelectedIteration is { } iteration)
+            {
+                var prompt = new PromptText(iteration.Prompt);
+                <section class="mb-3">
+                    <h2 class="h6">Prompt that will be delivered</h2>
+                    <pre class="prompt-view prompt-preview">@iteration.Prompt</pre>
+                    <div class="small text-secondary">
+                        @prompt.CharacterCount characters · @prompt.LineCount lines · @prompt.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@prompt.Sha256" />
+                    </div>
+                </section>
+            }
+
+            @if (config.ExecutionCount == 0)
+            {
+                <div class="alert alert-warning py-2">
+                    This is the first execution of this version. Starting it <strong>freezes the version's configuration</strong>:
+                    its details, iterations, parameters and score rules can no longer be changed.
+                </div>
+            }
+
+            <button type="submit" class="btn btn-primary" disabled="@starting">Start…</button>
+            <a class="btn btn-link" href="versions/@VersionId?tab=executions">Cancel</a>
+        </EditForm>
+
+        <ConfirmDialog Visible="confirming" Title="Start this execution?" ConfirmText="Start" Busy="starting"
+                       OnConfirm="StartAsync" OnCancel="() => confirming = false">
+            <p>
+                <strong>@SelectedIteration?.IterationLabel</strong> · @ReferenceData.AgentName(form.AgentID) ·
+                @ReferenceData.PhaseName(form.PhaseID) · attempt @form.AttemptNumber
+            </p>
+            <p class="mb-0">
+                The execution is recorded and its prompt is registered as a delivered-prompt artifact. You can then copy the
+                prompt to the agent. The execution cannot be deleted afterwards.
+                @if (config.ExecutionCount == 0)
+                {
+                    <strong> The version's configuration will be frozen.</strong>
+                }
+            </p>
+        </ConfirmDialog>
+    }
+}
+else if (problem is null)
+{
+    <p>Loading…</p>
+}
+
+@code {
+    [Parameter] public long VersionId { get; set; }
+    [SupplyParameterFromQuery(Name = "iterationId")] public long? IterationIdQuery { get; set; }
+
+    private VersionConfiguration? configuration;
+    private ExecutionStartForm form = new();
+    private string? blockedReason;
+    private ApiProblem? problem;
+    private bool confirming;
+    private bool starting;
+    private bool preferencesApplied;
+
+    private ShepherdApi.Iteration? SelectedIteration =>
+        configuration?.Iterations.FirstOrDefault(i => i.IterationID == form.IterationID);
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var loadTask = Loader.LoadAsync(VersionId);
+            await Task.WhenAll(loadTask, ReferenceData.EnsureLoadedAsync());
+            configuration = loadTask.Result;
+            blockedReason = ExecutionRules.StartBlockedReason(
+                configuration, ReferenceData.StatusName(configuration.Version.StatusID), Conventions.Value);
+
+            if (ReferenceData.FindStatus(Conventions.Value.DefaultExecutionStatusName) is null)
+            {
+                blockedReason = $"There is no “{Conventions.Value.DefaultExecutionStatusName}” status for new executions. Create it under Reference data.";
+            }
+
+            // Defaults (brief §7.1): the iteration navigated from, else the first; the first phase.
+            form = new ExecutionStartForm
+            {
+                IterationID = IterationIdQuery is { } id && configuration.Iterations.Any(i => i.IterationID == id)
+                    ? id
+                    : configuration.Iterations.FirstOrDefault()?.IterationID ?? 0,
+                PhaseID = ReferenceData.Phases.FirstOrDefault()?.PhaseID ?? 0,
+            };
+            SetAgent(ReferenceData.Agents.FirstOrDefault(a => a.Active)?.AgentID ?? 0);
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    // The last-used agent is a browser preference, readable only after the first interactive render.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (preferencesApplied || configuration is null)
+        {
+            return;
+        }
+
+        preferencesApplied = true;
+        if (int.TryParse(await Preferences.GetAsync(PreferenceKeys.Agent), out var agentId) &&
+            ReferenceData.Agents.Any(a => a.AgentID == agentId && a.Active) && agentId != form.AgentID)
+        {
+            SetAgent(agentId);
+            StateHasChanged();
+        }
+    }
+
+    private void AgentChanged() => SetAgent(form.AgentID);
+
+    // Choosing an agent fills in its default model and interface (editable).
+    private void SetAgent(int agentId)
+    {
+        form.AgentID = agentId;
+        var agent = ReferenceData.Agents.FirstOrDefault(a => a.AgentID == agentId);
+        form.ModelUsed = agent?.DefaultModel;
+        form.InterfaceUsed = agent?.DefaultInterface;
+        SuggestAttempt();
+    }
+
+    private void SuggestAttempt()
+    {
+        if (configuration is not null)
+        {
+            form.AttemptNumber = ExecutionRules.NextAttemptNumber(configuration.Executions, form.IterationID, form.AgentID, form.PhaseID);
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        starting = true;
+        problem = null;
+        try
+        {
+            var statusId = ReferenceData.FindStatus(Conventions.Value.DefaultExecutionStatusName)!.StatusID;
+            var result = await Workflow.StartAsync(form.ToRequest(statusId, Utc.Now), SelectedIteration!.Prompt ?? string.Empty);
+            await Preferences.SetAsync(PreferenceKeys.Agent, form.AgentID.ToString());
+
+            // The execution page shows the registered prompt for copying, or offers a retry if
+            // registration failed after the execution was created.
+            Navigation.NavigateTo($"executions/{result.Execution.ExecutionID}");
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex); // Nothing was created.
+            confirming = false;
+        }
+        finally
+        {
+            starting = false;
+        }
+    }
+}

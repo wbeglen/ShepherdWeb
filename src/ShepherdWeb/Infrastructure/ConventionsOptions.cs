@@ -18,6 +18,9 @@ public class ConventionsOptions
     /// <summary>Status the Lock action sets together with LockedUTC.</summary>
     [Required] public string LockedStatusName { get; set; } = "Locked";
 
+    /// <summary>A version with this status accepts no new executions (owner decision Q3).</summary>
+    [Required] public string RetiredStatusName { get; set; } = "Retired";
+
     /// <summary>Status given to new executions (owner decision N10). The API cannot change it later.</summary>
     [Required] public string DefaultExecutionStatusName { get; set; } = "Draft";
 

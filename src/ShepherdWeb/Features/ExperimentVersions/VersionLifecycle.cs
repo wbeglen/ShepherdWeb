@@ -37,8 +37,8 @@ public static class VersionLifecycle
 
         if (saysLocked && !IsLocked(version))
         {
-            return $"Status is “{statusName}”, but this version has no lock timestamp, so ShepherdAPI does not treat its " +
-                   "configuration as locked. Review the configuration, then use Lock to lock it.";
+            return $"Status is “{statusName}”, but this version has no lock timestamp, so ShepherdAPI does not treat it as " +
+                   "locked: its executions, scores and evidence can still change. Use Lock on the Overview when the record is final.";
         }
 
         if (saysDraft && IsLocked(version))

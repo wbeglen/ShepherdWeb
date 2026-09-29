@@ -1,6 +1,6 @@
 # ShepherdWeb Architecture — MVP
 
-**Status:** Proposed, revision 3. Awaiting review. No implementation has started, and none will until this document is approved.
+**Status:** Revision 4. Revision 3 was approved and slices 0–1 are implemented; revision 4 records the owner's lifecycle decisions for the execution and scoring slice (§14, Q1–Q6).
 **Scope:** The MVP only. This document says what the MVP is allowed to build. It does not describe a final design.
 **Audience:** The Good Shepherd owner/operator, and an experienced .NET engineer learning modern Blazor. Sections marked *Blazor note* explain decisions that are specific to Blazor.
 
@@ -12,6 +12,7 @@
 | 2 | Revised for the owner's lifecycle clarification (§3) and answers to B1–B4 and N1–N9 (§14). The main effects: a new lifecycle model (Draft → Locked → execution); a **conflict found between that lifecycle and ShepherdAPI's current lock enforcement** (F1, new blocking question B5); clone/lineage removed (TBD); `ScoreRule.Active` ignored; weight totals removed; prompt-drift handling simplified; run facts written once when an execution finishes; score-rule correction left as a TBD boundary. |
 | 3 | Revised for the owner's execution-workflow clarification: **Configure → Review → Lock → Start → HANDS OFF → Ends → Evaluate**. While an execution runs, the UI assumes no routine human activity. Artifact capture and scoring move to after the execution ends. Intervention handling is reduced to what the existing schema already records (`InterventionCount`, `OutcomeNotes`), plus an exceptional path for preserving any additional delivered prompt. The intervention-specific artifact types from revision 2 are removed, and intervention representation is TBD. Manual prompt copying is treated as start-up plumbing. |
 | 3.1 | Recorded owner decisions N10 (new executions get `Draft`) and B5 (R1 approved; the reading of "editable" confirmed). No open questions remain. |
+| 4 | **Lifecycle revised to ShepherdAPI's existing lock semantics** (owner decisions Q1–Q6, §14). Executions run on a version that is still `Draft`; configuration becomes immutable when the **first execution exists**; the **Lock action is the final immutability boundary** for everything, including scores and evidence. **R1 is withdrawn**; the execution and scoring slice proceeds against the existing API. Server-side enforcement the API still lacks is recorded as A1, A3 and A5 (§11); A4 is an optional efficiency improvement; A2 is deferred. Former slices 2 and 3 are merged. Lock moves onto the version Overview. Also records what implementing slice 1 found (201/204 contract gap, overload ambiguity, versions with executions but no lock). |
 
 ### How to read this document
 
@@ -36,7 +37,7 @@ Open questions are collected in §14.
 ShepherdWeb is the web client an operator uses to work with the Good Shepherd experiment platform. Its job is to cut down the typing, retyping, and copying needed to:
 
 1. **Configure** experiments: experiment versions, iterations and their prompts, parameters, score rules, and the global reference data those depend on.
-2. **Conduct** executions: start them from locked configuration, stay out of the way while they run, record when and how they ended, then support evaluation (artifacts, scores, evidence).
+2. **Conduct** executions: start them from complete configuration, stay out of the way while they run, record when and how they ended, then support evaluation (artifacts, scores, evidence).
 3. **Inspect** experiment data, in bounded amounts, to investigate and verify.
 
 It does this without weakening experimental integrity. Convenience must never hide or change what was actually used.
@@ -52,7 +53,7 @@ ShepherdWeb does not own domain data. ShepherdAPI owns the domain, and ShepherdW
 | `ShepherdAPI/docs/ARCHITECTURE.md` | Alpha, approved |
 | `ShepherdAPI/database/Create_Experiments_Database_And_Tables-6.sql` | DDL v6, including `ExperimentVersion.LockedUTC` |
 | `ShepherdAPI/contracts/openapi.json` | OpenAPI 3.0.4 |
-| `ShepherdAPI/src/**`, `ShepherdAPI/tests/**` | commit `3881ed6` **plus uncommitted working-tree changes** (ScoreRule add/delete-only lifecycle with `RowState`). Found during slice 0: the committed `openapi.json` predates those changes, so ShepherdWeb's pinned contract was captured from the running working tree (see `contracts/SOURCE.md`). |
+| `ShepherdAPI/src/**`, `ShepherdAPI/tests/**` | commit `dce802f` (ScoreRule add/delete-only lifecycle with `RowState`). Slices 0–1 were built against the same code while it was still uncommitted. ShepherdAPI's committed `contracts/openapi.json` was not regenerated in that commit, so ShepherdWeb's pinned contract was captured from the running API (see `contracts/SOURCE.md`). |
 
 Several findings come from the service code rather than the contract, because what the API actually enforces matters more here than what it describes.
 
@@ -60,48 +61,48 @@ Several findings come from the service code rather than the contract, because wh
 
 ## 3. Experiment Lifecycle (as clarified by the owner)
 
-This is the central invariant that the rest of the design depends on. It applies to the whole experiment version, not to prompts, iterations, or score rules individually.
+This is the central invariant that the rest of the design depends on. It applies to the whole experiment version, not to prompts, iterations, or score rules individually. **Revision 4** adopts ShepherdAPI's existing lock semantics (owner decision Q1).
 
 ```
-   Draft ───────────────► Locked ───────────────────────────► Complete / Retired
-   configure, review,     configuration immutable               (status changes; what
-   correct, refine        executions may now run                 they freeze is TBD)
-   NO executions          after the first execution starts:
-                          only ScoreObservation and
-                          ScoreObservationEvidence stay editable
+   Draft, no executions ──first execution──► Draft, executing ──Lock──► Locked (final)
+   configure, review,                         configuration frozen        LockedUTC set
+   correct, refine                            executions recorded         nothing editable
+                                              scoring and evidence        except status
+                                              editable                    (e.g. → Retired)
 ```
 
 **[Owner decision]**
 
-1. **Configuration takes as long as the operator needs.** A version does not become executable just because it was created. In `Draft`, the version and its configuration (descriptive fields, iterations and prompts, parameters, score rules) can be created, reviewed, corrected, and refined.
-2. **Nothing executes against a version until its configuration is complete and the version is `Locked`.**
-3. **Once the first execution begins, the version's configuration is immutable.** Because executions require a locked version, configuration is in fact immutable from the moment of locking.
-4. **After execution begins, only `ScoreObservation` and `ScoreObservationEvidence` remain editable.**
+1. **Configuration takes as long as the operator needs.** A version does not become executable just because it was created. Before its first execution, the version and its configuration (descriptive fields, iterations and prompts, parameters, score rules) can be created, reviewed, corrected, and refined.
+2. **Executions run on a version that is still `Draft`.** The operator starts the first execution when the configuration is complete. **New executions are blocked for `Locked` or `Retired` versions** (Q3). `Complete` is not an immutability boundary; `LockedUTC` remains authoritative.
+3. **Once the first execution exists, all experiment-defining configuration is immutable** (Q1, Q6): version descriptive fields, iterations and prompts, parameters, and score rules.
+4. **After execution begins, executions are recorded and evaluated until the version is locked.** Executions, artifacts and run facts are recorded; ScoreObservations and ScoreObservationEvidence are created and corrected. **The Lock action is the final immutability boundary**: it sets `LockedUTC` and the `Locked` status, after which nothing can change except the version's status.
 5. **An execution is hands-off.** It works like a horse race: all human preparation happens before the gates open. Once an execution starts, the operator waits for the agent to finish while the system records what happens. Human activity resumes only after the execution ends, with scoring, evidence, review, and analysis.
 6. **Intervention is exceptional.** It is not part of the normal workflow, but it can happen (as in the recent Codex execution problem). When it does, **the fact that it happened must be preserved**, because it may matter when the execution is interpreted later. How interventions are represented in detail is **TBD**.
 7. **Manual steps needed to start an agent are plumbing.** Copying and pasting the prompt is not evidence that the operator normally takes part in an execution.
-8. The version statuses that matter are `Draft`, `Locked`, `Retired`, and `Complete`.
+8. The version statuses that matter are `Draft`, `Locked`, `Retired`, and `Complete`. The version stays `Draft` while executions and scoring are underway (Q3).
+9. **`EndUTC` is the authoritative indicator that an execution has ended** (Q2). `Execution.StatusID` does not govern editability. Ending an execution freezes its run facts but **does not freeze scoring**; scoring is offered only after an execution has ended (Q5).
 
 ```
- Configure → Review → Lock │ Start Execution → HANDS OFF → Execution Ends │ Evaluate
- ───── human-paced ─────── │ ─── system records; human waits ────────────  │ ── human-paced ──
-                           │  (exceptional: intervention, fact preserved)  │ artifacts, scores,
-                           │                                               │ evidence, review
+ Configure → Review │ Start Execution → HANDS OFF → Execution Ends │ Evaluate … │ Lock (final)
+ ── human-paced ─── │ ─── system records; human waits ────────────  │ ── human ── │
+                    │  (exceptional: intervention, fact preserved)  │ artifacts,  │ nothing more
+                    │                                               │ scores,     │ can change
+                    │                                               │ evidence    │
 ```
 
-**[Owner decision, B5 — confirmed] How "editable" in rule 4 is read.** Rule 4 governs *correcting existing records*. *Recording* what happens while an execution runs is a different activity, and it has to remain possible, or no execution could be recorded at all:
+**What is allowed in each state:**
 
-| Activity after locking | Allowed? | Basis |
-|---|---|---|
-| Changing configuration (version descriptive fields, Iteration, Parameter, ScoreRule) | No | Rules 3–4 |
-| Changing version status (Locked → Complete / Retired) | Yes | ShepherdAPI §5.3: status is exempt from the lock |
-| Creating an execution (the gates open) | Yes, and only now | Rule 2 |
-| Registering the delivered prompt at start, and any additional prompt delivered during an exceptional intervention | Yes. Artifacts are insert-only, so this records rather than edits | Brief §4.3 |
-| Writing an execution's run facts (`EndUTC`, `InterventionCount`, `OutcomeNotes`) | Yes, **once**, when the execution ends (§8.2). Frozen afterwards. | ShepherdAPI §5.1 |
-| After the execution ends: registering evaluation artifacts; creating and correcting ScoreObservation and ScoreObservationEvidence | Yes | Rules 4–5 |
-| Anything else | No | Rule 4 |
+| Activity | Draft, no executions | Draft, executing | Locked | Basis |
+|---|---|---|---|---|
+| Change configuration (version details, Iteration, Parameter, ScoreRule) | Yes | **No** | No | Rules 1, 3 |
+| Start an execution | Yes, once configuration is complete | Yes | **No** (also no for `Retired`) | Rule 2 |
+| Register delivered prompts (at start, and during an exceptional intervention) | — | Yes | No | Brief §4.3 |
+| Write run facts (`EndUTC`, `InterventionCount`, `OutcomeNotes`) | — | Yes, **once**, when the execution ends; frozen afterwards | No | Rule 9; ShepherdAPI §5.1 |
+| Register evaluation artifacts; create and correct ScoreObservation and ScoreObservationEvidence | — | Yes, for ended executions | **No** | Rules 4, 9 |
+| Change version status | Yes | Yes | Yes (`Locked` → `Retired`/`Complete`) | ShepherdAPI §5.3 |
 
-**[TBD]** What `Complete` and `Retired` freeze, if anything. Examples: whether scoring may continue after `Complete`, or whether a `Retired` version may still start executions. Until evidence says otherwise, ShepherdWeb offers **Start execution** only when the version is locked *and* its status is `Locked` (a UI convenience, not a domain rule), and it offers scoring wherever the API allows it.
+**Enforcement.** ShepherdAPI already enforces the Lock boundary and the `EndUTC` run-fact freeze. It does **not** yet enforce the first-execution configuration freeze (rule 3), the `Retired` start block (rule 2), or scoring only after an execution ends (rule 9). ShepherdWeb applies those in the UI, and they are recorded as server-side enforcement work **A1** and **A5** (§11).
 
 ---
 
@@ -131,18 +132,18 @@ This is the central invariant that the rest of the design depends on. It applies
 
 | # | Finding | Effect on ShepherdWeb |
 |---|---|---|
-| **F1** | **ShepherdAPI's lock enforcement conflicts with the clarified lifecycle (§3), in both directions.** (a) The API **rejects** creating executions, artifacts, observations, and evidence links once `LockedUTC` is set (`RecordingService` lock guards; API architecture §5.3 treats locking as "the experimental record is final"). (b) The API **allows** executions on unlocked (`Draft`) versions. | Under the clarified lifecycle, **no execution can currently be recorded correctly.** Against a locked version the API refuses. Against a draft version it accepts something the invariant forbids. This is the most important finding in revision 2. It blocks the execution and scoring slices until resolved. See **B5** and **R1**. |
-| F2 | ScoreRule has a unique constraint on `(ExperimentVersionID, PhaseID, ScoreCategoryID)` that **includes soft-deleted rows**, and there is no update endpoint. | A retired rule cannot be re-created for the same phase and category in the same version. Under the clarified lifecycle this matters only in `Draft`, where no observations can reference any rule. **[TBD, owner decision B4]** See AD-7 and §7.4. |
-| F3 | `CreateScoreObservation` does not check that the score is within [Min, Max], that the rule belongs to the execution's version, that the rule's phase matches the execution's phase, or that the rule is active (`RowState='A'`). | ShepherdWeb restricts what can be picked and entered, but only as a convenience. The API should enforce this (R2, brief §7.3). |
+| **F1** | ShepherdAPI treats `LockedUTC` as "the experimental record is final" (API architecture §5.3): it allows executions, artifacts, observations and evidence while a version is unlocked and rejects all of them after locking. It does **not** freeze configuration when the first execution is created. | **Resolved in revision 4:** the owner adopted these lock semantics (Q1), so the execution and scoring slice proceeds against the existing API and **R1 is withdrawn**. The remaining gap, the first-execution configuration freeze, is enforced in the UI and recorded as **A1** (§11). |
+| F2 | ScoreRule has a unique constraint on `(ExperimentVersionID, PhaseID, ScoreCategoryID)` that **includes soft-deleted rows**, and there is no update endpoint. | A retired rule cannot be re-created for the same phase and category in the same version. Rules can only be retired before the first execution exists (§3 rule 3), when no observations can reference any rule. **[TBD, owner decision B4]** See AD-7 and §7.4. |
+| F3 | `CreateScoreObservation` does not check that the score is within [Min, Max], that the rule belongs to the execution's version, that the rule's phase matches the execution's phase, or that the rule is active (`RowState='A'`). | ShepherdWeb restricts what can be picked and entered, but only as a convenience. The API should enforce this (**A3**, brief §7.3). |
 | F4 | Timestamps are `DateTime`. Values read through Dapper have `Kind=Unspecified`, so the JSON has **no `Z` suffix**. Incoming values with a non-UTC offset are converted to the *server's local time* before being stored. | ShepherdWeb always sends UTC-kind values and treats every received timestamp as UTC (AD-10). R3 fixes this for all clients. |
 | F5 | The OpenAPI document has no `operationId`s. | Generated client method names are awkward (AD-2, R4). |
 | F6 | No CORS configuration. | Irrelevant with server-side calls (AD-1). |
 | F7 | Reference data (Agent, Phase, ScoreCategory, Status, Rater, ArtifactType) is global, unversioned, freely editable, and not governed by any lock. | **[Owner decision, N4]** A permanent warning on the edit pages is enough for the MVP (AD-7). |
-| F8 | Lists are scoped by foreign key only. There is no "all executions for a version" query, and `GET /score-rules` returns only non-retired rules. | Inspection makes one call per iteration. That is acceptable at MVP volume (AD-4, R5 if it proves slow). |
-| F9 | `Execution.StatusID` is set at creation and **cannot be changed through the API**. There is no endpoint for it, and API §5.1 says it has no architectural meaning. | ShepherdWeb sets it once from a configured default (AD-13). **[TBD]** Whether execution status needs to change after creation. |
+| F8 | Lists are scoped by foreign key only. There is no "all executions for a version" query, and `GET /score-rules` returns only non-retired rules. | Inspection makes one call per iteration. That is acceptable at MVP volume (AD-4; A4 would remove the extra calls). |
+| F9 | `Execution.StatusID` is set at creation and **cannot be changed through the API**. There is no endpoint for it, and API §5.1 says it has no architectural meaning. | ShepherdWeb sets it once from a configured default (AD-13). `EndUTC`, not the status, decides whether an execution has ended (Q2). **[Deferred, A2]** A way to change execution status, pending clarification of its future purpose. |
 | F10 | ShepherdAPI targets .NET 8, whose support ends 10 November 2026. | **[Owner decision, N9]** Upgrade to .NET 10 as soon as practical (R6). |
 
-What already works well for a client: RFC 7807 ProblemDetails errors, a distinct 409 "Record Locked", full-replacement PUTs with explicit mutable-field sets, a real OpenAPI contract, and a configuration aggregate (`ExperimentDesignService`) that **already** freezes everything at lock exactly as §3 requires.
+What already works well for a client: RFC 7807 ProblemDetails errors, a distinct 409 "Record Locked", full-replacement PUTs with explicit mutable-field sets, a real OpenAPI contract, and lock enforcement (`LockedUTC` freezes everything a version governs) that already matches §3's final boundary.
 
 ---
 
@@ -182,7 +183,7 @@ What already works well for a client: RFC 7807 ProblemDetails errors, a distinct
 
 **Generator: NSwag**, through the `OpenApiReference` MSBuild item (`NSwag.ApiDescription.Client`), with these settings: one client and one interface per OpenAPI tag (`ExperimentVersionsClient` / `IExperimentVersionsClient`, mapping onto the API controllers); System.Text.Json; **data annotations generated** from the schema's `maxLength` and `required` values (AD-5); and the base URL taken from `HttpClient.BaseAddress`.
 
-**Why a pinned snapshot instead of fetching the live Swagger document:** builds are reproducible and do not need ShepherdAPI running. Contract changes show up as reviewable diffs in ShepherdWeb. Updating is a deliberate step: copy the file, rebuild, fix whatever no longer compiles. This matters in revision 2, because the lifecycle alignment (R1) will change API behavior. The contract shape may not change, but ShepherdWeb should record which API commit it was verified against.
+**Why a pinned snapshot instead of fetching the live Swagger document:** builds are reproducible and do not need ShepherdAPI running. Contract changes show up as reviewable diffs in ShepherdWeb. Updating is a deliberate step: copy the file, rebuild, fix whatever no longer compiles. Behavior changes that leave the contract shape unchanged (such as the server-side enforcement items in §11) are why ShepherdWeb records which API commit it was verified against.
 
 **Why NSwag rather than Kiota:** Kiota produces a fluent request builder and makes every model property nullable. It needs its own runtime packages and error-mapping setup. NSwag produces plain classes and flat async methods that feel familiar to .NET developers. It throws a typed `ApiException<ProblemDetails>` that is easy to map in one place (AD-6), and it carries DataAnnotations through to the forms. The weakness is naming without `operationId`s (F5). That is cosmetic and fixed by **R4**.
 
@@ -239,7 +240,7 @@ ShepherdWeb/
 2. **The URL identifies what is on screen.** Routes include IDs (`/versions/{VersionId:long}`, `/executions/{ExecutionId:long}`), and filters are query-string parameters (`[SupplyParameterFromQuery]`). A refresh, a lost circuit, or a bookmark returns to the same view.
 3. **Reference data is cached per circuit.** A scoped `ReferenceData` service loads the six lookup lists once and provides by-ID name lookups for display. It has an explicit `RefreshAsync()`, called after reference-data edits.
 4. **Workflow services exist only where one user action needs several API calls in a fixed order.** The MVP has exactly two: `StartExecutionWorkflow` (create the execution, then write and register the delivered prompt) and `ArtifactCaptureWorkflow` (stream, hash, write, register). They hold client-side sequencing, not domain rules, and are unit-testable without the UI.
-5. **N+1 reads are acceptable** at MVP volume. **[Recommendation R5]** `GET /executions?experimentVersionId=` only if inspection proves slow.
+5. **N+1 reads are acceptable** at MVP volume. **[Optional, A4]** `GET /executions?experimentVersionId=` and `GET /score-observations?experimentVersionId=` would make the version-level tabs one call each.
 
 **Alternative considered:** Fluxor or other Redux-style stores. They solve frequently changing state shared across pages. ShepherdWeb's state is "the API resource I'm looking at", and a global store would create a second, possibly stale, authority.
 
@@ -286,25 +287,27 @@ ShepherdWeb **reads** the lifecycle state and changes what it offers, so the ope
 
 | State | UI behavior |
 |---|---|
-| Version in `Draft` (no `LockedUTC`) | All configuration is editable. **Start execution is not offered.** A **Review configuration** view and the **Lock** action are available. |
-| Version locked (`LockedUTC` set) | All configuration is read-only, with a banner showing the lock time. **Start execution** is offered while the status is `Locked` (§3, TBD for other statuses). Status can still be changed to `Complete` or `Retired`. |
-| Version **not locked but already has executions** (found in slice 1: data recorded before the lifecycle was clarified, e.g. "Pit Stop Agent Evaluation", 15 executions) | Treated as **configuration frozen**, exactly like a locked version, because §3 rule 3 makes configuration immutable once execution has begun. A banner explains this and **Review and lock** stays available so the operator can make it permanent. UI guard only; once R1 is in place ShepherdAPI prevents new cases. |
-| Status name and `LockedUTC` disagree (e.g. status `Locked`, no `LockedUTC`) | A warning explaining the mismatch. Lock state is always taken from `LockedUTC`. The owner chose this handling at the start of slice 1. |
+| Version `Draft`, no executions | All configuration is editable. **Start execution** is offered once the version has at least one iteration. **Lock** is on the Overview (with confirmation); a read-only **Review configuration** page is linked from it. |
+| Version `Draft` with executions | **Configuration frozen** (§3 rule 3): configuration tabs are read-only and a banner explains why. Executions can be started; ended executions can be evaluated. A **Score observations** tab appears once any execution has ended. **Lock** stays available on the Overview. UI guard until **A1** exists. |
+| Version locked (`LockedUTC` set) | **Final.** Everything is read-only, with a banner showing the lock time: configuration, executions, artifacts, scores and evidence. Start execution is not offered. Status can still change (for example to `Retired`). |
+| Version status `Retired` (not locked) | Start execution is not offered (Q3). Everything else follows the rows above. |
+| Status name and `LockedUTC` disagree (e.g. status `Locked`, no `LockedUTC`) | A warning explaining the mismatch. Lock state is always taken from `LockedUTC`. The owner chose this handling at the start of slice 1. Start execution is not offered while the status says `Locked` (Q3). |
 | Execution in progress (no `EndUTC`) | **Hands-off view.** It shows what is running (iteration, agent, phase, attempt, start time) and the delivered prompt with **Copy prompt** (start-up plumbing). The primary action is **Execution ended**. The only other action is a deliberately secondary **Deliver additional prompt (intervention)…** for the exceptional case (AD-8). No artifact capture, scoring, or editing is offered. |
-| Execution ended (`EndUTC` set) | **Evaluation view.** Run facts are read-only. Artifact capture, scoring, and evidence linking are offered here, wherever the API allows. |
+| Execution ended (`EndUTC` set) | **Evaluation view.** Run facts are read-only. Artifact capture, scoring, and evidence linking are offered here until the version is locked. |
 | Fields that identify a record (execution: iteration, agent, phase, attempt, start; parameter name; every artifact field) | Editable only on the create form, read-only everywhere else. |
 | Retired ScoreRule (`RowState='D'`) | Not shown in configuration lists. |
 
-**Status selection:** for an unlocked version the status control never offers `Locked` (that is reached only through the Lock action, which sets `LockedUTC` and the status together, API §5.3); for a locked version it never offers `Draft`. A current status that is not offerable (an existing mismatch) is still shown as selected, so the control never silently misreports it. That keeps `StatusID` and `LockedUTC` from disagreeing. It is a UI guard, not a domain rule. **[TBD]** Whether ShepherdAPI should also enforce it. It is not part of the approved R1.
+**Status selection:** for an unlocked version the status control never offers `Locked` (that is reached only through the Lock action, which sets `LockedUTC` and the status together, API §5.3); for a locked version it never offers `Draft`. A current status that is not offerable (an existing mismatch) is still shown as selected, so the control never silently misreports it. That keeps `StatusID` and `LockedUTC` from disagreeing. It is a UI guard, not a domain rule. **[TBD]** Whether ShepherdAPI should also enforce it.
 
-**Configuration review before locking:** locking is deliberate and human-paced (§3), so the version page has a **Review configuration** view. It is a single read-only page showing the version, every iteration with its full prompt text, the parameters, and the score rules grouped by phase. It exists so the operator can check the whole configuration in one place before locking. **[TBD]** Whether locking should have preconditions (for example, "every phase has at least one score rule"). ShepherdWeb shows no completeness warnings until there is evidence of what counts as incomplete.
+**Configuration review:** the Overview links to a **Review configuration** view: a single read-only page showing the version, every iteration with its full prompt text, the parameters, and the score rules grouped by phase. It exists so the operator can check the whole configuration in one place, especially before the first execution, which freezes it. The **Lock** action itself is on the Overview (revision 4). **[TBD]** Whether locking should have preconditions (for example, "every phase has at least one score rule"). ShepherdWeb shows no completeness warnings until there is evidence of what counts as incomplete.
 
 **Irreversible actions require an explicit confirmation that says what will happen:**
 
-- **Lock version:** shows the version, counts of iterations, parameters, and score rules, and the text "Configuration becomes permanent. Executions become possible. This cannot be undone through ShepherdWeb or ShepherdAPI."
+- **Lock version:** shows the version, counts of iterations and executions (and how many are still in progress), and the text "Everything becomes permanent: configuration, executions, artifacts, scores and evidence. No further executions can be started. This cannot be undone through ShepherdWeb or ShepherdAPI."
+- **Start the first execution:** also states that starting freezes the version's configuration.
 - **Execution ended:** "End time, intervention count, and outcome notes become permanent."
 - **Register artifact:** a review step shows hash, size, and type. Artifacts cannot be changed or deleted.
-- **Retire score rule (Draft only):** "This phase and category cannot be given a new rule in this version" (F2). **[TBD, B4]** How score-rule mistakes should be corrected. Until evidence shows what is needed, retiring is the only correction the UI offers, and it states the consequence plainly.
+- **Retire score rule (before the first execution only):** "This phase and category cannot be given a new rule in this version" (F2). **[TBD, B4]** How score-rule mistakes should be corrected. Until evidence shows what is needed, retiring is the only correction the UI offers, and it states the consequence plainly.
 
 **Reference-data edits (F7, owner decision N4):** the edit pages for Phase, ScoreCategory, Status, ArtifactType, and Rater permanently show "Changes apply retroactively to every experiment version, including locked ones."
 
@@ -318,7 +321,7 @@ This addresses brief §4.3.
 
 **[Decision] The "Start execution" workflow:**
 
-1. **Before the gates open** (no API writes yet): on a locked version, the operator selects an iteration, agent, and phase. ShepherdWeb fills in defaults (§8.2).
+1. **Before the gates open** (no API writes yet): on a version that is not locked and not `Retired`, the operator selects an iteration, agent, and phase. ShepherdWeb fills in defaults (§8.2).
 2. A **review panel** shows the exact prompt text, its UTF-8 byte length, and its SHA-256, next to the execution fields. This is the operator's last chance to check everything, because nothing about the execution can be changed after Start.
 3. **Start** (the gates open) runs `POST /api/executions` (StartUTC = now, UTC). ShepherdWeb then writes the prompt bytes once to the artifact store (AD-9) and runs `POST /api/artifacts` with ArtifactType `DeliveredPrompt`, `MimeType = text/plain; charset=utf-8`, and `OriginalURI = urn:goodshepherd:iteration:{IterationID}:prompt`, which records where the text came from.
 4. Only after registration succeeds does **Copy prompt** become available, directly under the Start button. The operator copies it and pastes it into the agent. That is the plumbing needed to start a manually operated agent (§3 rule 7), and it takes seconds, so `StartUTC` is the moment Start was clicked. Copying uses browser JS interop (`navigator.clipboard.writeText`); localhost is a secure context, so the clipboard API is allowed.
@@ -327,7 +330,7 @@ This addresses brief §4.3.
 
 **Byte-exactness:** UTF-8 without BOM. Line endings are kept exactly as stored, with no normalization. The hash covers exactly the bytes written. *Found in slice 1:* some existing prompts use `\r\n` line endings, and a browser textarea turns line endings into `\n` as soon as the text is typed in. Editing such a prompt in Draft therefore changes its line endings (the editor's live hash shows it). This is harmless to integrity, because it can only happen before locking and what is stored is what will be delivered, but it is why ShepherdWeb never re-saves a prompt field the operator didn't edit.
 
-**The delivered prompt is `Iteration.Prompt` — [Decision].** Because configuration is frozen at lock and executions can only happen after lock (§3), `Iteration.Prompt` cannot change once any execution has used it, as long as the API enforces the lifecycle (R1). No substitution or composition happens when an execution runs. The per-execution artifact is still required, because brief §4.3 makes every delivered prompt an artifact in its own right. It also gives each execution a self-contained, hash-verified record.
+**The delivered prompt is `Iteration.Prompt` — [Decision].** Because configuration freezes when the first execution exists (§3 rule 3), `Iteration.Prompt` cannot change once any execution has used it. ShepherdWeb enforces this in the UI today; **A1** would make ShepherdAPI enforce it. No substitution or composition happens when an execution runs. The per-execution artifact is still required, because brief §4.3 makes every delivered prompt an artifact in its own right. It also gives each execution a self-contained, hash-verified record.
 
 **Interventions: exceptional, preserved, not yet modeled (§3 rules 5–6).** The design records only what current evidence requires and **introduces no intervention taxonomy, types, or workflow**:
 
@@ -337,7 +340,7 @@ This addresses brief §4.3.
 
 **Consistency check during inspection:** the execution detail page compares the *first* delivered-prompt artifact's SHA-256 with the hash of the current `Iteration.Prompt`. Under the lifecycle they must always match. A mismatch means the invariant was bypassed (for example, by direct database access, which API §5.3 says it does not detect). The check is one comparison, and it shows a visible warning if it ever fires.
 
-**What changed from revision 1:** the "prompt drift" feature (side-by-side comparison, warnings in the prompt editor, and the old R1 "reject prompt edits once executions exist") is no longer needed. Locking before execution makes drift impossible through the API, so all that remains is the one-line consistency check above. Owner answer N8 ("just the prompt") is kept on record for the narrower rule, but R1's lifecycle alignment covers it.
+**What changed from revision 1:** the "prompt drift" feature (side-by-side comparison, warnings in the prompt editor) is not needed while configuration is frozen from the first execution, so all that remains is the one-line consistency check above. Until **A1** is implemented the freeze is UI-only, and the consistency check is what would reveal a prompt changed through another client. Owner answer N8 ("just the prompt") is superseded by Q6: the freeze covers all configuration.
 
 ---
 
@@ -380,7 +383,7 @@ Delivered prompts go through the same store code (steps 2–4) with the text's U
 | Need | Mechanism |
 |---|---|
 | **Preferences**: last-used rater, agent, artifact type, and "current version" | Browser storage via the built-in `ProtectedLocalStorage`. No new dependency. |
-| **Recoverable drafts**: unsaved prompt text (during configuration), outcome notes (when the execution ends), observation notes (during evaluation) | `ProtectedLocalStorage`, keyed by resource, saved shortly after typing stops, cleared on a successful save. A page with a draft shows "Unsaved draft from {time} — restore / discard". A draft is **never** submitted automatically. |
+| **Recoverable drafts**: unsaved prompt text (during configuration) and outcome notes (when the execution ends). Observation notes are short and saved row by row, so they have no drafts **[Deferred]** until evidence shows they are lost in practice | `ProtectedLocalStorage`, keyed by resource, saved shortly after typing stops, cleared on a successful save. A page with a draft shows "Unsaved draft from {time} — restore / discard". A draft is **never** submitted automatically. |
 
 **Why:** it protects long text against a dropped circuit (AD-1) and cannot be confused with domain data (brief §3.4).
 
@@ -447,11 +450,13 @@ Top nav:  Experiments | Executions | Inspect | Reference Data          [API: ●
                                      "Experiment" entity: brief §5.3). Status, lock state,
                                      EffectiveDateUTC.
 /versions/new
-/versions/{id}                       Tabs: Overview | Iterations | Parameters | Score Rules |
-                                     Review | Executions (appears once locked; in-progress
-                                     executions listed first, so one left running is easy to find)
-/versions/{id}/iterations/{iid}      Iteration + prompt editor (read-only once locked)
-/executions/start?iterationId=…      Prepare + Start (AD-8), locked versions only
+/versions/{id}                       Tabs: Overview (with Lock) | Iterations | Parameters |
+                                     Score Rules | Executions | Score observations (appears once
+                                     any execution has ended). In-progress executions are listed
+                                     first, so one left running is easy to find.
+/versions/{id}/review                Read-only configuration review
+/versions/{id}/iterations/{iid}      Iteration + prompt editor (read-only once frozen)
+/versions/{id}/executions/new        Prepare + Start (AD-8); not for Locked or Retired versions
 /executions/{id}                     In progress: hands-off view (copy prompt, "Execution ended",
                                      secondary "Deliver additional prompt (intervention)…").
                                      Ended: evaluation view (artifacts, link to scoring)
@@ -466,14 +471,14 @@ Top nav:  Experiments | Executions | Inspect | Reference Data          [API: ●
 
 ### 8.1 Configuration (Draft)
 
-- **Experiment versions.** Create: Name (choose an existing name or type a new one), VersionLabel, EffectiveDateUTC (default now), Description. Status is set to `Draft`. Edit: descriptive fields only, while in Draft. **Lock** follows the configuration review (AD-7). Status changes after locking go through a separate control.
-- **Iterations.** The next `Sequence` is filled in as max + 1. There is a prompt editor (AD-12). Delete is available in Draft. **[Deferred]** Drag-and-drop reordering.
-- **Parameters.** An inline editable table. `Name` cannot be changed after creation; renaming means delete and re-create, in Draft.
+- **Experiment versions.** Create: Name (choose an existing name or type a new one), VersionLabel, EffectiveDateUTC (default now), Description. Status is set to `Draft`. Edit: descriptive fields only, before the first execution. **Lock** (final) is on the Overview (AD-7). Status changes go through a separate control.
+- **Iterations.** The next `Sequence` is filled in as max + 1. There is a prompt editor (AD-12). Delete is available before the first execution. **[Deferred]** Drag-and-drop reordering.
+- **Parameters.** An inline editable table. `Name` cannot be changed after creation; renaming means delete and re-create, before the first execution.
 - **Score rules.** A table grouped by phase (in phase order) showing category, weight, min/max, HigherIsBetter (from the category), and notes. **`ScoreRule.Active` is not shown or used anywhere (owner decision N2).** No weight totals are shown or calculated (owner decision N3). Create: phase and category chosen from lists, with pairs that already exist disabled (F2), and min < max checked on the client. Retire: AD-7, with the F2 consequence stated. **[TBD, B4]** How score-rule mistakes should be corrected beyond that.
 - **Reference data.** Six small, explicit list-and-edit pages sharing `ConfirmDialog` and layout markup, with the retroactivity warning (AD-7). They are **not** a metadata-driven generic CRUD framework (brief §3.6).
 - **Not included (owner decision N5, TBD):** cloning a version and recording lineage between versions. A new version is created empty. The only reuse is copying prompt text between iterations (AD-12). Revisit when repeated manual setup shows what is actually needed.
 
-### 8.2 Conducting an execution (Locked): prepare, start, hands off, end
+### 8.2 Conducting an execution (version not locked or retired): prepare, start, hands off, end
 
 **Before the gates open.** Everything is chosen and reviewed here, and no API writes happen until Start:
 
@@ -505,11 +510,12 @@ This is followed by the AD-7 confirmation. The page then switches to the **evalu
 
 ### 8.3 Scoring (evaluation, after the execution ends)
 
-- Scoring is offered only for ended executions (`EndUTC` set). That is a UI convenience following §3 rule 5. Whether the API should enforce it is R7.
+- Scoring is offered only for ended executions (`EndUTC` set) on versions that are not locked (owner decision Q5). ShepherdAPI enforces the lock; the ended-execution rule is UI-only until **A5**.
 - The scoring page for an execution shows the **rater** (defaults to the last used) and a grid with **one row for each non-retired score rule whose phase matches the execution's phase**. Each row shows category, HigherIsBetter, weight, allowed range, a score input limited to [Min, Max] with step 0.01 (`decimal(5,2)`), and notes.
 - Existing observations for the selected rater are loaded. Saving a row creates (POST) or corrects (`PUT content`) an observation. Each row has its own save status, so a failure affects only that row.
 - **Evidence:** each observation has a checklist of the execution's artifacts with optional notes, which adds or removes `ScoreObservationEvidence` links. Only the same execution's artifacts are offered, which matches the API's check.
 - **[Owner decision N3]** No weighted totals or composite scores are calculated.
+- **Version-level view:** once any execution of a version has ended, the version page shows a **Score observations** tab listing every observation across its executions (iteration, agent, phase, attempt, rule, rater, score, evidence count), filterable, with links to each execution's scoring page. It reads one list per execution (**A4** would make it one call).
 
 ### 8.4 Inspection (bounded)
 
@@ -522,13 +528,11 @@ This is followed by the AD-7 confirmation. The page then switches to the **evalu
 
 ## 9. Handling the Lifecycle Conflict (F1)
 
-**[Owner decision, B5]** R1(a)–(d) is **approved** as the intended ShepherdAPI lifecycle. A version must be Locked before an execution can be created. Locking freezes experimental configuration. It does not prevent recording executions, artifacts, run facts, score observations, or evidence.
+**[Owner decision, Q1 — revision 4]** The conflict found in revision 2 is resolved by adopting ShepherdAPI's existing lock semantics (§3). **R1 is withdrawn** (it had been approved as B5 in revision 3). The execution and scoring slice proceeds against the existing API.
 
-**[Decision]** ShepherdWeb is designed for this lifecycle (§3). It does not accommodate the API's current behavior.
-
-- Slices 0 and 1 (skeleton, configuration, locking) work against the **current** API unchanged. The configuration aggregate already behaves as §3 requires.
-- Slices 2 and 3 (execution, scoring) need R1 **implemented** in ShepherdAPI first. Until then, ShepherdWeb must not work around F1. Creating executions against Draft versions would record data that violates the invariant, and executions cannot be deleted.
-- **Who changes ShepherdAPI:** R1 is carried out as a separate ShepherdAPI effort, following that project's own process (update its `docs/ARCHITECTURE.md` §5.3 first, then implement). This ShepherdWeb effort does not modify ShepherdAPI (brief §9.3). When R1 lands, ShepherdWeb refreshes its pinned contract snapshot and records the ShepherdAPI commit it was verified against (AD-2).
+- ShepherdAPI already enforces the final boundary (`LockedUTC`) and the run-fact freeze (`EndUTC`).
+- ShepherdWeb enforces, in the UI only, the rules the API does not yet have: the first-execution configuration freeze, no new executions for `Locked`/`Retired` versions, and scoring only after an execution ends. These are recorded as server-side enforcement work (**A1**, **A5**, §11), not implemented in ShepherdAPI in this pass.
+- Existing data such as "Pit Stop Agent Evaluation" (status `Locked`, no `LockedUTC`, 15 executions) is shown with its configuration frozen and a status-mismatch warning; the operator can lock it from the Overview.
 
 ---
 
@@ -540,11 +544,10 @@ Each slice produces something usable and is reviewed before the next begins.
 |---|---|---|
 | **0. Skeleton** | Blazor Web App (.NET 10, global Interactive Server, prerender off); pinned contract and NSwag client; options validation; layout, navigation, API status; `ApiErrorMapper`; `ErrorBoundary`; `ReferenceData` cache; UTC helpers; test project | — |
 | **1. Configuration** | Version list, detail, create, edit; iterations with prompt editor and drafts; parameters; score rules; reference-data pages; configuration review; lock; status changes | — (score-rule correction stays at "retire with warning", B4 TBD) |
-| **2. Execution** | Artifact store; prepare and start (register before release, copy prompt); hands-off in-progress view with the exceptional intervention path; "execution ended" form; evaluation-view artifact upload and registration | **R1 (approved) implemented in ShepherdAPI** |
-| **3. Scoring** | Observation grid; evidence links | R1 implemented |
-| **4. Inspection** | Version matrix; execution detail; consistency and integrity checks; jump to ID | — |
+| **2. Execution and scoring** (revision 4 merges former slices 2 and 3) | Artifact store; prepare and start (register before release, copy prompt); hands-off in-progress view with the exceptional intervention path; "execution ended" form; evaluation-view artifact upload and registration; per-execution scoring grid with evidence links; version **Executions** and **Score observations** tabs; Lock on the Overview | — (existing API) |
+| **3. Inspection** | Version matrix; execution detail; consistency and integrity checks; jump to ID | — |
 
-Slices 0 and 1 are not blocked by anything once this document is approved. The ShepherdAPI work for R1 (and R6, the .NET 10 upgrade) can proceed alongside them.
+No slice waits on ShepherdAPI changes. The server-side enforcement items (A1, A3, A5) and R6 (the .NET 10 upgrade) can proceed separately.
 
 ---
 
@@ -552,18 +555,20 @@ Slices 0 and 1 are not blocked by anything once this document is approved. The S
 
 | # | Change | Why (requirement) | Kind | Priority |
 |---|---|---|---|---|
-| **R1** | **Align lock enforcement with the clarified lifecycle.** (a) `CreateExecution` requires the version to be locked. (b) Remove the lock guard from recording operations: execution creation, `run-facts` (the `EndUTC` freeze stays), artifact creation, observation create/update, and evidence add/remove. (c) Leave the configuration aggregate unchanged; it already freezes at lock. (d) Update ShepherdAPI `docs/ARCHITECTURE.md` §5.3 to the new meaning of `LockedUTC`: "configuration final, execution permitted". **[TBD]** What, if anything, later freezes recording (for example `Complete` or `Retired`) is left as an explicit open boundary, not decided here. | Lifecycle invariant (§3); F1 | Service rules + API architecture doc | **Approved (B5). Critical: implementation blocks slices 2–3** |
-| R2 | Validate score observations: score within [Min, Max]; rule belongs to the execution's version; rule phase = execution phase; rule not retired | Validation authority belongs to the API (brief §7.3, F3) | Service rule | High |
+| ~~R1~~ | ~~Align lock enforcement with the revision 3 lifecycle.~~ **Withdrawn in revision 4** (owner decision Q1): ShepherdAPI's existing lock semantics were adopted instead. | — | — | Withdrawn |
+| **A1** | **Freeze experiment-defining configuration once the first execution exists:** reject changes to version descriptive fields, iterations (create, update, delete), parameters (create, update, delete) and score rules (create, retire) when any execution exists for the version. Optionally also reject starting executions for `Retired` versions. | §3 rules 2–3 (Q1, Q3, Q6). Today only ShepherdWeb enforces it; any other client could change configuration that executions already used | Service rule | **Identified server-side enforcement work.** Not implemented in this pass |
+| **A3** (was R2) | Validate score observations: score within [Min, Max]; rule belongs to the execution's version; rule phase = execution phase; rule not retired | Validation authority belongs to the API (brief §7.3, F3); scoring begins in slice 2 | Service rule | **Identified server-side enforcement work.** Not implemented in this pass |
 | R3 | Normalize timestamps to UTC (UTC kind on read, conversion on write), or use `DateTimeOffset` | Correct UTC handling for every client (F4) | Service/serialization | Medium |
 | R4 | Explicit OpenAPI `operationId`s | Readable generated clients (F5). Found in slice 1: without them NSwag emits overloads such as `IterationsGetAsync(long id)` and `IterationsGetAsync(long? experimentVersionId)`, so a list call with a plain `long` silently binds to the single-item overload. ShepherdWeb uses named arguments to avoid this. | Contract metadata | Low → Medium |
-| R5 | `GET /executions?experimentVersionId=` | Fewer N+1 reads in inspection (F8) | Query endpoint | Low, only if needed |
+| **A4** (was R5) | `GET /executions?experimentVersionId=` and `GET /score-observations?experimentVersionId=` | The version Executions and Score observations tabs make one call per iteration and per execution (F8) | Query endpoints | **Optional efficiency improvement** |
 | R6 | Upgrade ShepherdAPI to .NET 10 LTS | .NET 8 support ends 10 November 2026 (owner decision N9) | Platform | **As soon as practical** |
-| R7 | Reject ScoreObservation creation for an execution whose `EndUTC` is not set | Evaluation follows the end of the execution (§3 rule 5). ShepherdWeb only guards this in the UI | Service rule | Low. For review; not needed for the MVP to work |
+| **A5** (was R7) | Reject ScoreObservation creation for an execution whose `EndUTC` is not set | Scoring follows the end of the execution (§3 rule 9, Q5). ShepherdWeb only guards this in the UI | Service rule | **Identified server-side enforcement work.** Not implemented in this pass |
+| **A2** | A way to change `Execution.StatusID` after creation | Only needed if execution status is to mean something (F9) | Endpoint or contract change | **Deferred** pending clarification of the future purpose of `Execution.StatusID` (Q2) |
 | R8 | Declare the status codes ShepherdAPI actually returns: `201 Created` for every create (`CreatedAtAction`) and `204 No Content` for every DELETE (`[ProducesResponseType(...)]`) | Found in slice 1 (the 201 case only in live testing): the OpenAPI document declares `200` for every operation, so generated clients report every successful create and delete as an error **after the change was made**, which invites a retry and a duplicate. ShepherdWeb works around it with NSwag's `ProcessResponse` hook (`GeneratedClientCustomization.cs`); any other generated client would hit the same trap | Contract metadata | Medium (worked around in ShepherdWeb) |
 
-**Removed or changed since revision 1:**
-- **Old R1** (reject prompt edits once executions exist) is covered by the new R1, because locking before execution makes it redundant.
-- **Old R2** (filtered unique index for ScoreRule) is now **TBD (B4)**. Evidence to watch for: how often rules have to be corrected during Draft. Because no observations can exist in Draft, every option remains open, including relaxing the constraint, allowing updates in Draft, or physical deletion in Draft.
+**Removed or changed since revision 1** (revision 4: R1 withdrawn; R2, R5 and R7 renumbered A3, A4 and A5 to match the owner's decisions; A1 and A2 added):
+- **Old R1** (reject prompt edits once executions exist) is covered by **A1**, the first-execution configuration freeze.
+- **Old R2** (filtered unique index for ScoreRule) is now **TBD (B4)**. Evidence to watch for: how often rules have to be corrected before the first execution. Because no observations can exist before then, every option remains open, including relaxing the constraint, allowing updates, or physical deletion before the first execution.
 - **Old R4** (reference-data retroactivity policy) is **settled: a warning is enough** (N4).
 - **Old R8** (server-side clone and lineage) is **TBD (N5)**.
 
@@ -574,7 +579,7 @@ Slices 0 and 1 are not blocked by anything once this document is approved. The S
 ### Assumptions
 - **A1** A single operator on the machine that runs ShepherdWeb, ShepherdAPI, and the artifact store (confirmed by B1).
 - **A2** The operator delivers prompts by copy and paste into the agent's interface.
-- **A3** The delivered prompt is exactly `Iteration.Prompt` (AD-8). This follows from the lifecycle.
+- **A3** The delivered prompt is exactly `Iteration.Prompt` (AD-8). This follows from the first-execution configuration freeze. (Assumption numbers here are unrelated to the API work items A1–A5 in §11.)
 - **A4** Data volume per version is tens of iterations and hundreds of executions, so N+1 reads are acceptable.
 - **A5** The operator creates the conventional reference rows (`Draft`, `Locked`, `Complete`, `Retired` statuses; the `DeliveredPrompt` artifact type) on the reference-data pages. ShepherdWeb does not seed data.
 - ~~**A6**~~ How §3 rule 4 is read. No longer an assumption: confirmed by the owner (B5).
@@ -585,11 +590,11 @@ Each item has a deliberate boundary in the design, and nothing assumes the answe
 
 | TBD | Current boundary in ShepherdWeb | Evidence that would resolve it |
 |---|---|---|
-| **B4** Score-rule correction | Retire with a stated consequence; nothing else | How often rules have to be corrected during Draft, and why |
+| **B4** Score-rule correction | Retire with a stated consequence; nothing else | How often rules have to be corrected before the first execution, and why |
 | **N5** Version cloning / lineage | New versions start empty; prompt text can be copied between iterations | Repeated manual setup effort across versions |
-| What `Complete` / `Retired` freeze | Start execution offered only while status is `Locked`; scoring wherever the API allows | How the operator actually closes out an experiment |
+| What `Complete` means | Nothing: it is not an immutability boundary (Q3). `LockedUTC` is authoritative; `Retired` blocks new executions | How the operator actually closes out an experiment |
 | Lock preconditions | None; the configuration review is informational | Versions locked with configuration that later proved incomplete |
-| Execution status after creation (F9) | Always `Draft` (N10); UI state comes from `EndUTC` | Whether operators need execution status to change or mean something (that would need a new API endpoint) |
+| Execution status after creation (F9, A2) | Always `Draft` (N10); `EndUTC` alone decides whether an execution has ended (Q2) | A defined future purpose for `Execution.StatusID` |
 | Intervention representation | `InterventionCount` + `OutcomeNotes` when the execution ends; any additional delivered prompt registered as a `DeliveredPrompt` artifact; no types, links, or classification | Real interventions (such as the recent Codex case): what had to be preserved to interpret them, and what the count and notes failed to capture |
 
 ### Deferred (with the reason)
@@ -632,12 +637,18 @@ Deliberately **not** included: UI component libraries, state-management librarie
 | N7 | 50 MB artifact limit | Yes. |
 | N8 | Scope of old R1 | Just the prompt. Now covered by the lifecycle (AD-8). |
 | N9 | ShepherdAPI platform | Upgrade to .NET 10 as soon as practical (R6). |
-| B5 | Align ShepherdAPI's lock enforcement with the lifecycle (R1) | **Approved.** R1(a)–(d) is the intended lifecycle: a version must be Locked before an execution can be created, and locking freezes configuration only. The reading of "editable" in §3 is confirmed. |
+| B5 | Align ShepherdAPI's lock enforcement with the lifecycle (R1) | Approved in revision 3; **superseded by Q1 in revision 4** (R1 withdrawn). |
 | N10 | Status for new executions | `Draft`. Because the API cannot change `Execution.StatusID` after creation (F9), every execution keeps `Draft` status. Execution state (in progress or ended) comes from `EndUTC`, never from the status. |
+| Q1 | Lifecycle for the execution and scoring slice | Adopt ShepherdAPI's lock semantics: configuration immutable when the first execution exists; Lock is the final immutability boundary. **R1 withdrawn**; §3 rules 2 and 4 revised. |
+| Q2 | What governs execution editability | `EndUTC` is authoritative. `StatusID` does not govern editability. A2 not implemented (deferred). |
+| Q3 | Version status during executions | Stays `Draft`. Lock sets `Locked`. New executions blocked for `Locked` or `Retired` versions. `Complete` is not an immutability boundary; `LockedUTC` is authoritative. |
+| Q4 | Artifacts in this slice | Yes: artifact upload and delivered-prompt artifacts, with the configurable local artifact store. |
+| Q5 | When scoring is offered | Only after an execution has ended. |
+| Q6 | Scope of the first-execution freeze | All experiment-defining configuration, not ScoreRules alone. |
 
 ### Blocking
 
-None open. **Remaining dependency, not a question:** slices 2 and 3 wait for the approved R1 to be implemented in ShepherdAPI (§9).
+None open. The execution and scoring slice proceeds against the existing API; A1, A3 and A5 are recorded server-side enforcement work, not dependencies.
 
 ### Non-blocking
 

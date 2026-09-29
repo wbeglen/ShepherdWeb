@@ -1,0 +1,155 @@
+@* The Score observations tab of a version: every observation across its executions, filterable, with
+   links to each execution's scoring page (docs/ARCHITECTURE.md §8.3). It appears once any execution
+   has ended. ShepherdAPI lists observations per execution only, so this makes one call per execution
+   (A4 would make it one). *@
+@inject ShepherdApi.IScoreObservationsClient Observations
+@inject ShepherdApi.IScoreRulesClient ScoreRules
+@inject ReferenceData ReferenceData
+@inject ApiErrorMapper Errors
+
+<ProblemDisplay Problem="problem" OnRetry="LoadAsync" />
+
+@if (rows is null)
+{
+    @if (problem is null)
+    {
+        <p>Loading scores…</p>
+    }
+}
+else
+{
+    <div class="row g-2 mb-3">
+        <div class="col-md-3">
+            <select class="form-select form-select-sm" aria-label="Filter by iteration" @bind="iterationFilter">
+                <option value="0">All iterations</option>
+                @foreach (var i in Configuration.Iterations)
+                {
+                    <option value="@i.IterationID">@i.Sequence. @i.IterationLabel</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select form-select-sm" aria-label="Filter by agent" @bind="agentFilter">
+                <option value="0">All agents</option>
+                @foreach (var id in rows.Select(r => r.Execution.AgentID).Distinct())
+                {
+                    <option value="@id">@ReferenceData.AgentName(id)</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select form-select-sm" aria-label="Filter by phase" @bind="phaseFilter">
+                <option value="0">All phases</option>
+                @foreach (var id in rows.Select(r => r.Execution.PhaseID).Distinct())
+                {
+                    <option value="@id">@ReferenceData.PhaseName(id)</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select form-select-sm" aria-label="Filter by rater" @bind="raterFilter">
+                <option value="0">All raters</option>
+                @foreach (var id in rows.Select(r => r.Observation.RaterID).Distinct())
+                {
+                    <option value="@id">@ReferenceData.RaterName(id)</option>
+                }
+            </select>
+        </div>
+    </div>
+
+    var visible = Filtered().ToList();
+    <p class="small text-secondary">@visible.Count of @rows.Count scores · @unscoredEnded ended execution@(unscoredEnded == 1 ? "" : "s") without any score</p>
+
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr><th>Iteration</th><th>Execution</th><th>Agent</th><th>Phase</th><th class="text-end">Attempt</th><th>Category</th><th>Rater</th><th class="text-end">Score</th><th>Observed</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var row in visible)
+            {
+                <tr>
+                    <td>@Configuration.IterationOf(row.Execution)?.Sequence</td>
+                    <td><a href="executions/@row.Execution.ExecutionID/scoring">#@row.Execution.ExecutionID</a></td>
+                    <td>@ReferenceData.AgentName(row.Execution.AgentID)</td>
+                    <td>@ReferenceData.PhaseName(row.Execution.PhaseID)</td>
+                    <td class="text-end">@row.Execution.AttemptNumber</td>
+                    <td>@RuleLabel(row.Observation.ScoreRuleID)</td>
+                    <td>@ReferenceData.RaterName(row.Observation.RaterID)</td>
+                    <td class="text-end">@row.Observation.ObservedScore.ToString("0.##")</td>
+                    <td><UtcTimestamp Value="row.Observation.ObservedUTC" /></td>
+                    <td class="small">@row.Observation.ObservationNotes</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter, EditorRequired] public VersionConfiguration Configuration { get; set; } = default!;
+
+    private sealed record Row(ShepherdApi.Execution Execution, ShepherdApi.ScoreObservation Observation);
+
+    private List<Row>? rows;
+    private readonly Dictionary<int, ShepherdApi.ScoreRule> rulesById = new();
+    private int unscoredEnded;
+    private long iterationFilter;
+    private int agentFilter;
+    private int phaseFilter;
+    private int raterFilter;
+    private ApiProblem? problem;
+    private VersionConfiguration? loadedFor;
+
+    // Reload only when the parent has reloaded the configuration (see ScoreRuleTable for why).
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!ReferenceEquals(loadedFor, Configuration))
+        {
+            loadedFor = Configuration;
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        problem = null;
+        try
+        {
+            var executions = Configuration.Executions;
+            var lists = await Task.WhenAll(executions.Select(e => Observations.ScoreObservationsGetAsync(executionId: e.ExecutionID)));
+
+            foreach (var rule in Configuration.ScoreRules)
+            {
+                rulesById[rule.ScoreRuleID] = rule;
+            }
+
+            var observations = executions.Zip(lists).SelectMany(pair => pair.Second.Select(o => new Row(pair.First, o))).ToList();
+            foreach (var missing in observations.Select(r => r.Observation.ScoreRuleID).Distinct().Where(id => !rulesById.ContainsKey(id)))
+            {
+                rulesById[missing] = await ScoreRules.ScoreRulesGetAsync(missing); // retired since it was used
+            }
+
+            unscoredEnded = executions.Zip(lists).Count(pair => pair.First.EndUTC is not null && pair.Second.Count == 0);
+            rows = observations
+                .OrderBy(r => Configuration.IterationOf(r.Execution)?.Sequence)
+                .ThenBy(r => r.Execution.ExecutionID)
+                .ThenBy(r => r.Observation.ScoreRuleID)
+                .ThenBy(r => r.Observation.RaterID)
+                .ToList();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+    }
+
+    private IEnumerable<Row> Filtered() => rows!
+        .Where(r => iterationFilter == 0 || r.Execution.IterationID == iterationFilter)
+        .Where(r => agentFilter == 0 || r.Execution.AgentID == agentFilter)
+        .Where(r => phaseFilter == 0 || r.Execution.PhaseID == phaseFilter)
+        .Where(r => raterFilter == 0 || r.Observation.RaterID == raterFilter);
+
+    private string RuleLabel(int scoreRuleId) =>
+        rulesById.TryGetValue(scoreRuleId, out var rule)
+            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID) + (rule.RowState == "D" ? " (retired rule)" : "")
+            : $"Rule #{scoreRuleId}";
+}
