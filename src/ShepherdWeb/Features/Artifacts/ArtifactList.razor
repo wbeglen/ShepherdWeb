@@ -1,0 +1,207 @@
+@* An execution's artifacts, with integrity verification and (when evaluation is allowed) upload
+   (docs/ARCHITECTURE.md AD-9). Upload is two steps: the file is streamed into the local store and
+   hashed, then the operator reviews the facts and registers it. Registration cannot be undone. *@
+@using Microsoft.AspNetCore.StaticFiles
+@using ShepherdWeb.Infrastructure.ArtifactStore
+@inject ArtifactRegistrar Registrar
+@inject ReferenceData ReferenceData
+@inject IPreferenceStore Preferences
+@inject ApiErrorMapper Errors
+@inject IOptions<ArtifactStoreOptions> StoreOptions
+@inject IOptions<ConventionsOptions> Conventions
+
+<ProblemDisplay Problem="problem" />
+
+@if (Artifacts.Count == 0)
+{
+    <p class="text-secondary">No artifacts.</p>
+}
+else
+{
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr><th>Name</th><th>Type</th><th class="text-end">Size</th><th>Received</th><th>SHA-256</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in Artifacts)
+            {
+                <tr>
+                    <td>@a.OriginalName</td>
+                    <td>@ReferenceData.ArtifactTypeName(a.ArtifactTypeID)</td>
+                    <td class="text-end text-nowrap">@FormatSize(a.ByteLength)</td>
+                    <td><UtcTimestamp Value="a.ReceivedUTC" /></td>
+                    <td><Sha256Display Value="@(a.ShA256 ?? string.Empty)" /></td>
+                    <td class="text-nowrap">
+                        <a class="btn btn-sm btn-link" href="artifact-files/@a.ArtifactID" target="_blank" rel="noopener">View</a>
+                        <button class="btn btn-sm btn-link" @onclick="() => VerifyAsync(a)">Verify</button>
+                        @if (verification.TryGetValue(a.ArtifactID, out var result))
+                        {
+                            <span class="small @(result == IntegrityResult.Verified ? "text-success" : "text-danger")">@Describe(result)</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (CanUpload)
+{
+    <section class="border rounded p-3 form-narrow">
+        <h3 class="h6">Add artifact</h3>
+        @if (stored is null)
+        {
+            <div class="row g-2 mb-2">
+                <div class="col-md-5">
+                    <label class="form-label" for="artifact-type">Type</label>
+                    <select id="artifact-type" class="form-select" @bind="artifactTypeId">
+                        <option value="0">Choose…</option>
+                        @foreach (var t in UploadTypes)
+                        {
+                            <option value="@t.ArtifactTypeID">@t.Name</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-7">
+                    <label class="form-label" for="artifact-file">File (up to @FormatSize(StoreOptions.Value.MaxUploadBytes))</label>
+                    <InputFile id="artifact-file" class="form-control" OnChange="FileChosen" />
+                </div>
+            </div>
+            <button class="btn btn-sm btn-outline-primary" disabled="@(file is null || artifactTypeId == 0 || busy)" @onclick="StoreAsync">
+                @(busy ? "Hashing…" : "Upload and hash")
+            </button>
+            @if (UploadTypes.Count == 0)
+            {
+                <div class="form-text">Create an artifact type under Reference data first.</div>
+            }
+        }
+        else
+        {
+            @* Review before registering: the artifact cannot be changed or deleted afterwards (AD-7). *@
+            <dl class="row small mb-2">
+                <dt class="col-sm-3">Name</dt><dd class="col-sm-9">@file?.Name</dd>
+                <dt class="col-sm-3">Type</dt><dd class="col-sm-9">@ReferenceData.ArtifactTypeName(artifactTypeId)</dd>
+                <dt class="col-sm-3">Size</dt><dd class="col-sm-9">@FormatSize(stored.ByteLength) (@stored.ByteLength bytes)</dd>
+                <dt class="col-sm-3">MIME type</dt><dd class="col-sm-9">@mimeType</dd>
+                <dt class="col-sm-3">SHA-256</dt><dd class="col-sm-9"><code>@stored.Sha256</code></dd>
+            </dl>
+            <p class="small text-secondary">Registering records this file as evidence of the execution. It cannot be changed or removed afterwards.</p>
+            <button class="btn btn-sm btn-primary" disabled="@busy" @onclick="RegisterAsync">Register artifact</button>
+            <button class="btn btn-sm btn-link" disabled="@busy" @onclick="Reset">Cancel</button>
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public long ExecutionId { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<ShepherdApi.Artifact> Artifacts { get; set; } = [];
+
+    /// <summary>True while evaluation is allowed: the execution has ended and the version is not locked.</summary>
+    [Parameter] public bool CanUpload { get; set; }
+
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private static readonly FileExtensionContentTypeProvider ContentTypes = new();
+
+    private readonly Dictionary<long, IntegrityResult> verification = new();
+    private IBrowserFile? file;
+    private int artifactTypeId;
+    private StoredFile? stored;
+    private string mimeType = string.Empty;
+    private ApiProblem? problem;
+    private bool busy;
+    private bool preferenceApplied;
+
+    // Delivered prompts are registered only by the execution workflow, never uploaded by hand.
+    private IReadOnlyList<ShepherdApi.ArtifactType> UploadTypes =>
+        ReferenceData.ArtifactTypes.Where(t => !string.Equals(t.Name, Conventions.Value.DeliveredPromptArtifactTypeName, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (preferenceApplied || !CanUpload)
+        {
+            return;
+        }
+
+        preferenceApplied = true;
+        if (int.TryParse(await Preferences.GetAsync(PreferenceKeys.ArtifactType), out var typeId) &&
+            UploadTypes.Any(t => t.ArtifactTypeID == typeId) && artifactTypeId == 0)
+        {
+            artifactTypeId = typeId;
+            StateHasChanged();
+        }
+    }
+
+    private void FileChosen(InputFileChangeEventArgs e) => file = e.File;
+
+    private async Task StoreAsync()
+    {
+        busy = true;
+        problem = null;
+        try
+        {
+            // Blazor note: the file streams over the circuit in chunks. OpenReadStream's default limit is
+            // 500 KB, so the configured maximum is passed explicitly (AD-9).
+            await using var stream = file!.OpenReadStream(StoreOptions.Value.MaxUploadBytes);
+            stored = await Registrar.StoreAsync(ExecutionId, stream, Path.GetExtension(file.Name));
+            mimeType = !string.IsNullOrWhiteSpace(file.ContentType) ? file.ContentType
+                : ContentTypes.TryGetContentType(file.Name, out var guessed) ? guessed
+                : "application/octet-stream";
+        }
+        catch (IOException ex)
+        {
+            problem = new ApiProblem(ApiProblemKind.Unexpected, "File not stored", ex.Message);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task RegisterAsync()
+    {
+        busy = true;
+        problem = null;
+        try
+        {
+            await Registrar.RegisterAsync(ExecutionId, artifactTypeId, stored!, file!.Name, $"upload:{file.Name}", mimeType);
+            await Preferences.SetAsync(PreferenceKeys.ArtifactType, artifactTypeId.ToString());
+            Reset();
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = Errors.Map(ex);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    // A stored but unregistered file stays in the store. It is content-addressed and harmless, and
+    // registering the same file later reuses it.
+    private void Reset()
+    {
+        stored = null;
+        file = null;
+    }
+
+    private async Task VerifyAsync(ShepherdApi.Artifact artifact) =>
+        verification[artifact.ArtifactID] = await Registrar.VerifyAsync(artifact);
+
+    private static string Describe(IntegrityResult result) => result switch
+    {
+        IntegrityResult.Verified => "✓ matches",
+        IntegrityResult.Mismatch => "✗ content differs from its recorded hash",
+        IntegrityResult.Missing => "✗ file missing",
+        _ => "not in this store",
+    };
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KB",
+        _ => $"{bytes / (1024.0 * 1024):0.#} MB",
+    };
+}
