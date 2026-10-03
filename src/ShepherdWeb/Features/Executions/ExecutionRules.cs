@@ -14,6 +14,15 @@ public static class ExecutionRules
     /// <summary>EndUTC is the authoritative indicator that an execution has ended (owner decision Q2).</summary>
     public static bool HasEnded(Execution execution) => execution.EndUTC is not null;
 
+    /// <summary>
+    /// True when the prompt delivered at the start of an execution is not the iteration's own prompt
+    /// (AD-8, revision: execution-specific prompt). Exact, ordinal comparison, because the delivered
+    /// prompt is byte-exact evidence: a prompt that is identical to the iteration's is simply the
+    /// iteration's prompt, however the operator arrived at it.
+    /// </summary>
+    public static bool IsPromptOverride(string? prompt, string? iterationPrompt) =>
+        !string.Equals(prompt ?? string.Empty, iterationPrompt ?? string.Empty, StringComparison.Ordinal);
+
     /// <summary>Why a new execution cannot be started on this version, or null if it can.</summary>
     public static string? StartBlockedReason(VersionConfiguration configuration, string statusName, ConventionsOptions conventions)
     {

@@ -33,7 +33,7 @@
             <div class="row g-3 mb-3">
                 <div class="col-md-6">
                     <label class="form-label" for="exec-iteration">Iteration</label>
-                    <InputSelect id="exec-iteration" class="form-select" @bind-Value="form.IterationID" @bind-Value:after="SuggestAttempt">
+                    <InputSelect id="exec-iteration" class="form-select" @bind-Value="form.IterationID" @bind-Value:after="IterationChanged">
                         <option value="0">Choose…</option>
                         @foreach (var i in config.Iterations)
                         {
@@ -92,13 +92,32 @@
 
             @if (SelectedIteration is { } iteration)
             {
-                var prompt = new PromptText(iteration.Prompt);
                 <section class="mb-3">
-                    <h2 class="h6">Prompt that will be delivered</h2>
-                    <pre class="prompt-view prompt-preview">@iteration.Prompt</pre>
-                    <div class="small text-secondary">
-                        @prompt.CharacterCount characters · @prompt.LineCount lines · @prompt.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@prompt.Sha256" />
-                    </div>
+                    <h2 class="h6">
+                        Prompt that will be delivered
+                        @if (PromptIsOverridden)
+                        {
+                            <span class="badge text-bg-warning ms-2">Edited for this execution</span>
+                        }
+                    </h2>
+                    <p class="small text-secondary mb-2">
+                        This starts as the iteration's prompt. You can edit it for this execution only; the iteration is not changed.
+                        Whatever is here when you click Start is registered as the delivered prompt and cannot be changed afterwards.
+                    </p>
+                    @if (promptResetNotice is not null)
+                    {
+                        <div class="alert alert-info py-2" role="status">@promptResetNotice</div>
+                    }
+                    <PromptEditor id="exec-prompt" Rows="10" Value="@PromptShown" ValueChanged="OnPromptEdited"
+                                  ValueExpression="() => form.PromptEdit" />
+                    <ValidationMessage For="() => form.PromptEdit" />
+                    @if (PromptIsOverridden)
+                    {
+                        <div class="small text-secondary mt-1">
+                            Iteration prompt SHA-256 <Sha256Display Value="@(new PromptText(iteration.Prompt).Sha256)" />
+                            <button type="button" class="btn btn-sm btn-link" @onclick="ResetPrompt">Reset to iteration prompt</button>
+                        </div>
+                    }
                 </section>
             }
 
@@ -123,6 +142,10 @@
             <p class="mb-0">
                 The execution is recorded and its prompt is registered as a delivered-prompt artifact. You can then copy the
                 prompt to the agent. The execution cannot be deleted afterwards.
+                @if (PromptIsOverridden)
+                {
+                    <strong> The prompt was edited for this execution and is registered instead of the iteration's prompt.</strong>
+                }
                 @if (config.ExecutionCount == 0)
                 {
                     <strong> The version's configuration will be frozen.</strong>
@@ -151,6 +174,42 @@ else if (problem is null)
     private ShepherdApi.Iteration? SelectedIteration =>
         configuration?.Iterations.FirstOrDefault(i => i.IterationID == form.IterationID);
 
+    private string? promptResetNotice;
+    private long previousIterationId;
+
+    // What the editor shows: the operator's edit if there is one, otherwise the iteration's own prompt
+    // (untouched text is never taken from the textarea, which would normalize line endings).
+    private string PromptShown => form.PromptEdit ?? SelectedIteration?.Prompt ?? string.Empty;
+
+    private bool PromptIsOverridden =>
+        form.PromptEdit is not null && ExecutionRules.IsPromptOverride(form.PromptEdit, SelectedIteration?.Prompt);
+
+    private void OnPromptEdited(string text)
+    {
+        form.PromptEdit = text;
+        promptResetNotice = null;
+    }
+
+    private void ResetPrompt()
+    {
+        form.PromptEdit = null;
+        promptResetNotice = null;
+    }
+
+    // An edit belongs to the iteration it was made against. Nothing has been recorded yet, so a different
+    // iteration simply gets its own prompt, and the operator is told if an edit was discarded.
+    private void IterationChanged()
+    {
+        var previous = configuration?.Iterations.FirstOrDefault(i => i.IterationID == previousIterationId);
+        var discardedEdit = form.PromptEdit is not null && ExecutionRules.IsPromptOverride(form.PromptEdit, previous?.Prompt);
+        form.PromptEdit = null;
+        promptResetNotice = discardedEdit
+            ? "The prompt was reset to the selected iteration's prompt because the iteration changed. Your edit was discarded."
+            : null;
+        previousIterationId = form.IterationID;
+        SuggestAttempt();
+    }
+
     protected override Task OnInitializedAsync() => LoadAsync();
 
     private async Task LoadAsync()
@@ -177,6 +236,8 @@ else if (problem is null)
                     : configuration.Iterations.FirstOrDefault()?.IterationID ?? 0,
                 PhaseID = ReferenceData.Phases.FirstOrDefault()?.PhaseID ?? 0,
             };
+            previousIterationId = form.IterationID;
+            promptResetNotice = null;
             SetAgent(ReferenceData.Agents.FirstOrDefault(a => a.Active)?.AgentID ?? 0);
         }
         catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
@@ -229,7 +290,8 @@ else if (problem is null)
         try
         {
             var statusId = ReferenceData.FindStatus(Conventions.Value.DefaultExecutionStatusName)!.StatusID;
-            var result = await Workflow.StartAsync(form.ToRequest(statusId, Utc.Now), SelectedIteration!.Prompt ?? string.Empty);
+            var (prompt, overridden) = form.ResolvePrompt(SelectedIteration!.Prompt);
+            var result = await Workflow.StartAsync(form.ToRequest(statusId, Utc.Now), prompt, overridden);
             await Preferences.SetAsync(PreferenceKeys.Agent, form.AgentID.ToString());
 
             // The execution page shows the registered prompt for copying, or offers a retry if

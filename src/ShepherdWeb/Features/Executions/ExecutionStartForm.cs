@@ -27,8 +27,32 @@ public sealed class ExecutionStartForm : IValidatableObject
 
     public DateTime StartUtc { get; set; } = Utc.Now;
 
+    /// <summary>
+    /// The operator's edit of the prompt for this execution, or null while they have not touched it.
+    /// Null matters: an untouched prompt is taken from the iteration itself and never round-trips
+    /// through a browser textarea, which would turn "\r\n" into "\n" (AD-8, byte-exactness).
+    /// </summary>
+    public string? PromptEdit { get; set; }
+
+    /// <summary>
+    /// The prompt to deliver and whether it overrides the iteration's. An edit that leaves the text
+    /// identical to the iteration's prompt is not an override.
+    /// </summary>
+    public (string Text, bool Overridden) ResolvePrompt(string? iterationPrompt)
+    {
+        var iteration = iterationPrompt ?? string.Empty;
+        return PromptEdit is not null && ExecutionRules.IsPromptOverride(PromptEdit, iteration)
+            ? (PromptEdit, true)
+            : (iteration, false);
+    }
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (PromptEdit is not null && string.IsNullOrWhiteSpace(PromptEdit))
+        {
+            yield return new ValidationResult("The prompt cannot be empty.", [nameof(PromptEdit)]);
+        }
+
         if (IterationID == 0)
         {
             yield return new ValidationResult("Choose an iteration.", [nameof(IterationID)]);

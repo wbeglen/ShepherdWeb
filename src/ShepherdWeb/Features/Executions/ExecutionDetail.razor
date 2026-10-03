@@ -5,6 +5,7 @@
 @inject ReferenceData ReferenceData
 @inject ApiErrorMapper Errors
 @inject IJSRuntime JS
+@inject IDraftStore Drafts
 @inject IOptions<ConventionsOptions> Conventions
 
 <PageTitle>Execution @ExecutionId · ShepherdWeb</PageTitle>
@@ -64,15 +65,45 @@
                 <strong>Delivered prompt not registered.</strong> The prompt cannot be copied until it is.
                 @if (!VersionLifecycle.IsLocked(v.Version))
                 {
-                    <button class="btn btn-sm btn-danger ms-2" disabled="@busy" @onclick="RegisterStartPromptAsync">Register it now</button>
+                    <button class="btn btn-sm btn-danger ms-2" disabled="@(busy || !pendingChecked)" @onclick="RegisterStartPromptAsync">Register it now</button>
                 }
             </div>
+            @if (pendingChecked && !VersionLifecycle.IsLocked(v.Version))
+            {
+                // The exact text that "Register it now" will register. It is shown, never editable: once Start
+                // happened, the prompt is the historical record of what was meant to be delivered.
+                var pending = new PromptText(RetryPrompt);
+                <section class="small mb-2" aria-label="Prompt to register">
+                    @if (pendingDraft is not null)
+                    {
+                        <div class="text-secondary">
+                            Saved when this execution was started@(RetryIsOverride ?" (edited for this execution; differs from the iteration's prompt)" : "").
+                            Exactly this text will be registered.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-danger">
+                            No saved copy of the prompt entered at Start was found, so the iteration's prompt will be registered.
+                            If a different prompt was meant to be delivered, do not deliver this one.
+                        </div>
+                    }
+                    <pre class="prompt-view prompt-preview mb-1">@RetryPrompt</pre>
+                    <div class="text-secondary">
+                        @pending.CharacterCount characters · @pending.LineCount lines · @pending.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@pending.Sha256" />
+                    </div>
+                </section>
+            }
         }
         else
         {
             <div class="small text-secondary mb-2">
                 Registered <UtcTimestamp Value="StartPrompt.ReceivedUTC" /> · SHA-256 <Sha256Display Value="@(StartPrompt.ShA256 ?? "")" />
-                @if (promptMatchesIteration == false)
+                @if (startPromptIsOverride)
+                {
+                    <span class="ms-2">Edited for this execution before Start; it intentionally differs from the iteration's prompt.</span>
+                }
+                else if (promptMatchesIteration == false)
                 {
                     <span class="text-danger ms-2">⚠ Differs from the iteration's current prompt. The configuration was changed outside ShepherdWeb.</span>
                 }
@@ -174,12 +205,45 @@ else if (problem is null)
     private bool busy;
     private string? startPromptText;
     private bool? promptMatchesIteration;
+    private bool startPromptIsOverride;
     private string additionalPrompt = string.Empty;
     private ShepherdApi.Artifact? lastAdditional;
     private string? copyMessage;
     private long loadedId;
 
+    // Retry of a start prompt that was never registered: the text saved in the browser when Start was
+    // clicked. It is read after the first render (browser storage needs JS interop).
+    private string? pendingDraft;
+    private bool pendingChecked;
+
     private ShepherdApi.Artifact? StartPrompt => view?.DeliveredPrompts.FirstOrDefault();
+
+    // What "Register it now" registers: the exact text saved at Start, never the editable-looking
+    // iteration prompt by silent substitution. Without a saved copy it falls back to the iteration's
+    // prompt, and the page says so (see the markup above).
+    private string RetryPrompt => pendingDraft ?? view?.Iteration.Prompt ?? string.Empty;
+
+    private bool RetryIsOverride => view is not null && ExecutionRules.IsPromptOverride(RetryPrompt, view.Iteration.Prompt);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (view is null || pendingChecked || StartPrompt is not null)
+        {
+            return;
+        }
+
+        pendingChecked = true;
+        try
+        {
+            pendingDraft = (await Drafts.LoadAsync(StartExecutionWorkflow.StartPromptDraftKey(ExecutionId)))?.Text;
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException)
+        {
+            pendingDraft = null; // Browser storage unavailable: treated as no saved copy, which the page states.
+        }
+
+        StateHasChanged();
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -194,13 +258,21 @@ else if (problem is null)
     private async Task LoadAsync()
     {
         problem = null;
+        pendingChecked = false;
+        pendingDraft = null;
         try
         {
             view = await Loader.LoadAsync(ExecutionId);
             startPromptText = StartPrompt is { } prompt ? await Registrar.ReadTextAsync(prompt) : null;
 
-            // Consistency check (AD-8): the start prompt must match the iteration's prompt, because
-            // configuration is frozen once an execution exists.
+            // An execution's start prompt is the iteration's own prompt unless it was edited for that one
+            // execution; the registered artifact's provenance says which (StartPromptOverrideUri).
+            startPromptIsOverride = StartPrompt is { } start &&
+                StartExecutionWorkflow.IsStartPromptOverrideUri(ExecutionId, start.OriginalURI);
+
+            // Consistency check (AD-8): a start prompt that claims the iteration as its source must match the
+            // iteration's prompt, because configuration is frozen once an execution exists. An execution-specific
+            // prompt intentionally differs, so it is reported as such instead of as a mismatch.
             promptMatchesIteration = StartPrompt is null
                 ? null
                 : string.Equals(StartPrompt.ShA256, new PromptText(view.Iteration.Prompt).Sha256, StringComparison.OrdinalIgnoreCase);
@@ -220,7 +292,9 @@ else if (problem is null)
 
     private Task RegisterStartPromptAsync() => RunAsync(async () =>
     {
-        await Workflow.RegisterStartPromptAsync(ExecutionId, view!.Iteration.IterationID, view.Iteration.Prompt ?? string.Empty);
+        var prompt = RetryPrompt; // exactly what the page shows
+        await Workflow.RegisterStartPromptAsync(
+            ExecutionId, view!.Iteration.IterationID, prompt, ExecutionRules.IsPromptOverride(prompt, view.Iteration.Prompt));
         await LoadAsync();
     });
 
