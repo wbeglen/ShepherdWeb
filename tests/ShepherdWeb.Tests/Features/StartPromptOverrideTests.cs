@@ -179,11 +179,13 @@ public class StartPromptOverrideWorkflowTests : AppTestContext
         var failed = await Workflow.StartAsync(Request, "Edited\r\nfor this run.", overridden: true);
 
         Assert.Null(failed.PromptArtifact);
-        Assert.Equal("Edited\r\nfor this run.", Drafts.Items["execution:11:start-prompt"].Text); // exact, including \r\n
+        var saved = PendingStartPrompt.TryDeserialize(Drafts.Items["execution:11:start-prompt"].Text)!;
+        Assert.Equal("Edited\r\nfor this run.", saved.Text); // exact, including \r\n
+        Assert.Equal("urn:goodshepherd:execution:11:prompt", saved.OriginalUri); // the provenance decided at Start is saved too
 
-        // The retry registers those exact bytes, with override provenance, and clears the saved copy.
+        // The retry registers those exact bytes, with the saved provenance, and clears the saved copy.
         Api.On(HttpMethod.Post, "/api/artifacts", req => StubShepherdApi.Response(HttpStatusCode.Created, EchoArtifact(req)));
-        await Workflow.RegisterStartPromptAsync(11, 7, Drafts.Items["execution:11:start-prompt"].Text, overridden: true);
+        await Workflow.RegisterStartPromptAsync(saved);
 
         var registered = JsonDocument.Parse(Api.Requests.Last(r => r.Method == HttpMethod.Post && r.Path == "/api/artifacts").Body!).RootElement;
         Assert.Equal(new PromptText("Edited\r\nfor this run.").Sha256, registered.GetProperty("shA256").GetString());
@@ -196,9 +198,11 @@ public class StartPromptOverrideWorkflowTests : AppTestContext
     {
         var sha = new PromptText("Edited for this run.").Sha256;
         Api.On(HttpMethod.Get, "/api/artifacts", HttpStatusCode.OK,
-            $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"shA256":"{{sha}}","receivedUTC":"2026-09-02T09:00:00","byteLength":20}]""");
+            $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"originalURI":"urn:goodshepherd:execution:11:prompt","shA256":"{{sha}}","receivedUTC":"2026-09-02T09:00:00","byteLength":20}]""");
 
-        var artifact = await Workflow.RegisterStartPromptAsync(11, 7, "Edited for this run.", overridden: true);
+        var artifact = await Workflow.RegisterStartPromptAsync(PendingStartPrompt.For(
+            new Execution { ExecutionID = 11, IterationID = 7, StartUTC = new DateTime(2026, 9, 2, 9, 0, 0, DateTimeKind.Utc) },
+            "Edited for this run.", overridden: true));
 
         Assert.Equal(5, artifact.ArtifactID);
         Assert.DoesNotContain(Api.Requests, r => r.Method == HttpMethod.Post);

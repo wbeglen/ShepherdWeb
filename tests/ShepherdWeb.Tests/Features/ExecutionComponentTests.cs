@@ -29,7 +29,7 @@ public class ExecutionComponentTests : AppTestContext
     {
         var stored = await Services.GetRequiredService<ArtifactFileStore>()
             .StoreAsync(11, new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text)), ".txt");
-        return $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"originalName":"iteration-7-prompt.txt","storedURI":"{{stored.StoredUri}}","mimeType":"text/plain; charset=utf-8","byteLength":{{stored.ByteLength}},"shA256":"{{stored.Sha256}}","receivedUTC":"2026-09-02T09:00:00"}]""";
+        return $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"originalName":"iteration-7-prompt.txt","originalURI":"urn:goodshepherd:iteration:7:prompt","storedURI":"{{stored.StoredUri}}","mimeType":"text/plain; charset=utf-8","byteLength":{{stored.ByteLength}},"shA256":"{{stored.Sha256}}","receivedUTC":"2026-09-02T09:00:00"}]""";
     }
 
     [Fact]
@@ -44,7 +44,7 @@ public class ExecutionComponentTests : AppTestContext
 
         Assert.Contains("Execution ended", cut.Markup);
         Assert.DoesNotContain("Score this execution", cut.Markup); // hands off: no evaluation while running
-        Assert.DoesNotContain("Differs from the iteration", cut.Markup);
+        Assert.DoesNotContain("differs from this iteration", cut.Markup);
 
         cut.FindAll("button").Single(b => b.TextContent == "Copy prompt").Click();
         cut.WaitForAssertion(() => Assert.Contains("Copied", cut.Markup));
@@ -52,15 +52,16 @@ public class ExecutionComponentTests : AppTestContext
     }
 
     [Fact]
-    public void InProgress_WithoutRegisteredPrompt_BlocksCopyAndOffersRegistration()
+    public void InProgress_WithoutRegisteredPrompt_BlocksCopy_AndOffersNoSubstitute()
     {
         ServeExecution(ended: false, locked: false);
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
-        cut.WaitForAssertion(() => Assert.Contains("Delivered prompt not registered", cut.Markup));
+        cut.WaitForAssertion(() => Assert.Contains("start a new attempt", cut.Markup));
 
+        Assert.Contains("No start prompt is registered for this execution", cut.Markup);
         Assert.DoesNotContain("Copy prompt", cut.Markup);
-        Assert.Contains("Register it now", cut.Markup);
+        Assert.DoesNotContain("Register it now", cut.Markup); // no saved prompt: nothing is offered for registration
     }
 
     [Fact]
@@ -70,7 +71,7 @@ public class ExecutionComponentTests : AppTestContext
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
 
-        cut.WaitForAssertion(() => Assert.Contains("Differs from the iteration", cut.Markup));
+        cut.WaitForAssertion(() => Assert.Contains("differs from this iteration", cut.Markup));
     }
 
     [Fact]

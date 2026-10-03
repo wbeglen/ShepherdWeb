@@ -20,9 +20,24 @@ public sealed record ExecutionView(
     public bool CanEditRunFacts => ExecutionRules.CanEditRunFacts(Execution, Version);
     public bool CanEvaluate => ExecutionRules.CanEvaluate(Execution, Version);
 
-    /// <summary>Prompts delivered to the agent, oldest first: the start prompt, then any intervention prompts.</summary>
+    /// <summary>All delivered-prompt artifacts, in the order received (for listing only; never used to decide a role).</summary>
     public IReadOnlyList<Artifact> DeliveredPrompts =>
         Artifacts.Where(a => a.ArtifactTypeID == DeliveredPromptTypeId).ToList();
+
+    /// <summary>
+    /// Delivered prompts whose provenance states they are this execution's start prompt (AD-8 role
+    /// contract). Normally exactly one; none means it was never registered; more than one is shown as
+    /// an observed fact and never resolved by picking one.
+    /// </summary>
+    public IReadOnlyList<Artifact> StartPrompts => PromptsWithRole(DeliveredPromptRole.Start);
+
+    public IReadOnlyList<Artifact> InterventionPrompts => PromptsWithRole(DeliveredPromptRole.Intervention);
+
+    /// <summary>Delivered prompts whose provenance states no role ShepherdWeb recognises for this execution.</summary>
+    public IReadOnlyList<Artifact> UnrecordedRolePrompts => PromptsWithRole(DeliveredPromptRole.Unrecorded);
+
+    private IReadOnlyList<Artifact> PromptsWithRole(DeliveredPromptRole role) =>
+        DeliveredPrompts.Where(a => PromptProvenance.RoleOf(a.OriginalURI, Execution) == role).ToList();
 
     /// <summary>Artifacts captured for evaluation, i.e. everything that is not a delivered prompt.</summary>
     public IReadOnlyList<Artifact> EvaluationArtifacts =>

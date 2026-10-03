@@ -5,7 +5,6 @@
 @inject ReferenceData ReferenceData
 @inject ApiErrorMapper Errors
 @inject IJSRuntime JS
-@inject IDraftStore Drafts
 @inject IOptions<ConventionsOptions> Conventions
 
 <PageTitle>Execution @ExecutionId · ShepherdWeb</PageTitle>
@@ -52,80 +51,121 @@
         }
     </dl>
 
-    @* ---- Delivered prompt (AD-8: register before release) ---- *@
+    @* ---- Start prompt (AD-8: identified by provenance, verified before release) ---- *@
     <section class="mb-4">
         <h3 class="h6">Delivered prompt</h3>
         @if (v.DeliveredPromptTypeId is null)
         {
             <div class="alert alert-danger py-2">There is no “@Conventions.Value.DeliveredPromptArtifactTypeName” artifact type, so the prompt cannot be registered. Create it under Reference data.</div>
         }
-        else if (StartPrompt is null)
+        else if (v.StartPrompts.Count == 0)
         {
             <div class="alert alert-danger py-2">
-                <strong>Delivered prompt not registered.</strong> The prompt cannot be copied until it is.
-                @if (!VersionLifecycle.IsLocked(v.Version))
-                {
-                    <button class="btn btn-sm btn-danger ms-2" disabled="@(busy || !pendingChecked)" @onclick="RegisterStartPromptAsync">Register it now</button>
-                }
+                <strong>No start prompt is registered for this execution.</strong> The prompt cannot be copied until it is.
             </div>
             @if (pendingChecked && !VersionLifecycle.IsLocked(v.Version))
             {
-                // The exact text that "Register it now" will register. It is shown, never editable: once Start
-                // happened, the prompt is the historical record of what was meant to be delivered.
-                var pending = new PromptText(RetryPrompt);
-                <section class="small mb-2" aria-label="Prompt to register">
-                    @if (pendingDraft is not null)
-                    {
+                @if (pendingLookup?.Usable is { } pending)
+                {
+                    // Exactly what was decided at Start: shown, never editable, registered with the saved provenance.
+                    var text = new PromptText(pending.Text);
+                    <section class="small mb-2" aria-label="Prompt to register">
                         <div class="text-secondary">
-                            Saved when this execution was started@(RetryIsOverride ?" (edited for this execution; differs from the iteration's prompt)" : "").
+                            Saved when this execution was started, with provenance
+                            “@(pending.IsOverride ? "edited for this execution before Start" : "the iteration's prompt")”.
                             Exactly this text will be registered.
                         </div>
-                    }
-                    else
-                    {
-                        <div class="text-danger">
-                            No saved copy of the prompt entered at Start was found, so the iteration's prompt will be registered.
-                            If a different prompt was meant to be delivered, do not deliver this one.
+                        <pre class="prompt-view prompt-preview mb-1">@pending.Text</pre>
+                        <div class="text-secondary mb-2">
+                            @text.CharacterCount characters · @text.LineCount lines · @text.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@text.Sha256" />
                         </div>
-                    }
-                    <pre class="prompt-view prompt-preview mb-1">@RetryPrompt</pre>
-                    <div class="text-secondary">
-                        @pending.CharacterCount characters · @pending.LineCount lines · @pending.ByteCount bytes (UTF-8) · SHA-256 <Sha256Display Value="@pending.Sha256" />
+                        <button class="btn btn-sm btn-danger" disabled="@busy" @onclick="() => RegisterPendingStartPromptAsync(pending)">Register it now</button>
+                    </section>
+                }
+                else
+                {
+                    // Fix 6 (owner decision): if the exact prompt from Start cannot be established, no substitute is offered.
+                    <div class="small mb-2" role="status">
+                        <p class="mb-1">@pendingLookup?.Problem</p>
+                        <p class="mb-1">
+                            ShepherdWeb cannot establish the exact prompt this execution was started with, so it will not register
+                            any prompt for it. This execution remains incomplete and is kept as it is.
+                        </p>
+                        <p class="mb-0">
+                            To proceed, <a href="versions/@v.Version.ExperimentVersionID/executions/new?iterationId=@v.Iteration.IterationID">start a new attempt</a>.
+                            You can record what happened in this execution's outcome notes.
+                        </p>
                     </div>
-                </section>
+                }
             }
+        }
+        else if (v.StartPrompts.Count > 1)
+        {
+            <div class="alert alert-danger py-2">
+                <strong>@v.StartPrompts.Count start prompts are registered for this execution.</strong>
+                None is released for copying.
+            </div>
+            <ul class="small">
+                @foreach (var start in v.StartPrompts)
+                {
+                    <li><UtcTimestamp Value="start.ReceivedUTC" /> · <code>@start.OriginalURI</code> · SHA-256 <Sha256Display Value="@(start.ShA256 ?? "")" /></li>
+                }
+            </ul>
         }
         else
         {
+            var start = v.StartPrompts[0];
             <div class="small text-secondary mb-2">
-                Registered <UtcTimestamp Value="StartPrompt.ReceivedUTC" /> · SHA-256 <Sha256Display Value="@(StartPrompt.ShA256 ?? "")" />
-                @if (startPromptIsOverride)
+                Registered <UtcTimestamp Value="start.ReceivedUTC" /> · SHA-256 <Sha256Display Value="@(start.ShA256 ?? "")" />
+                @if (PromptProvenance.IsExecutionStartUri(start.OriginalURI, e.ExecutionID))
                 {
-                    <span class="ms-2">Edited for this execution before Start; it intentionally differs from the iteration's prompt.</span>
+                    <span class="ms-2">Provenance: edited for this execution before Start.</span>
                 }
-                else if (promptMatchesIteration == false)
+                else if (!string.Equals(start.ShA256, iterationPromptSha, StringComparison.OrdinalIgnoreCase))
                 {
-                    <span class="text-danger ms-2">⚠ Differs from the iteration's current prompt. The configuration was changed outside ShepherdWeb.</span>
+                    // Observed fact only: the two hashes differ. No cause is inferred.
+                    <span class="text-danger ms-2">
+                        ⚠ The registered start prompt (SHA-256 <Sha256Display Value="@(start.ShA256 ?? "")" />) differs from this iteration's
+                        current prompt (SHA-256 <Sha256Display Value="@iterationPromptSha" />).
+                    </span>
                 }
             </div>
-            @if (v.CanEditRunFacts)
+            @if (startPromptText.Problem is { } integrityProblem)
             {
-                <button class="btn btn-primary" @onclick="() => CopyAsync(StartPrompt)">Copy prompt</button>
-                <span class="ms-2 small">@copyMessage</span>
+                <div class="alert alert-danger py-2" role="alert">@integrityProblem The prompt is not displayed or released for copying.</div>
             }
-            <details class="mt-2">
-                <summary class="small">Show the registered prompt</summary>
-                <pre class="prompt-view prompt-preview">@startPromptText</pre>
-            </details>
+            else
+            {
+                @if (v.CanEditRunFacts)
+                {
+                    <button class="btn btn-primary" @onclick="() => CopyAsync(start)">Copy prompt</button>
+                    <span class="ms-2 small">@copyMessage</span>
+                }
+                <details class="mt-2">
+                    <summary class="small">Show the registered prompt (verified)</summary>
+                    <pre class="prompt-view prompt-preview">@startPromptText.Text</pre>
+                </details>
+            }
         }
 
-        @if (v.DeliveredPrompts.Count > 1)
+        @if (v.InterventionPrompts.Count > 0)
         {
             <h4 class="h6 mt-3">Additional prompts delivered during interventions</h4>
             <ul class="small">
-                @foreach (var extra in v.DeliveredPrompts.Skip(1))
+                @foreach (var extra in v.InterventionPrompts)
                 {
-                    <li><UtcTimestamp Value="extra.ReceivedUTC" /> · <Sha256Display Value="@(extra.ShA256 ?? "")" /> · <a href="artifact-files/@extra.ArtifactID" target="_blank" rel="noopener">view</a></li>
+                    <li><UtcTimestamp Value="extra.ReceivedUTC" /> · <Sha256Display Value="@(extra.ShA256 ?? "")" /> · <a href="artifact-files/@extra.ArtifactID" target="_blank" rel="noopener">view (not verified)</a></li>
+                }
+            </ul>
+        }
+
+        @if (v.UnrecordedRolePrompts.Count > 0)
+        {
+            <h4 class="h6 mt-3">Delivered prompts with no recognised role</h4>
+            <ul class="small">
+                @foreach (var other in v.UnrecordedRolePrompts)
+                {
+                    <li><UtcTimestamp Value="other.ReceivedUTC" /> · <code>@(other.OriginalURI ?? "(no OriginalURI)")</code> · <Sha256Display Value="@(other.ShA256 ?? "")" /></li>
                 }
             </ul>
         }
@@ -159,7 +199,10 @@
             <div class="d-flex flex-wrap gap-2 mb-4">
                 <button class="btn btn-primary" @onclick="() => mode = Mode.Ending">Execution ended…</button>
                 <button class="btn btn-outline-secondary btn-sm" @onclick="() => mode = Mode.Editing">Edit run facts</button>
-                <button class="btn btn-outline-warning btn-sm" @onclick="() => mode = Mode.AdditionalPrompt">Deliver additional prompt (intervention)…</button>
+                @* An intervention prompt only makes sense after a start prompt exists (finding 2). *@
+                <button class="btn btn-outline-warning btn-sm" disabled="@(v.StartPrompts.Count == 0)"
+                        title="@(v.StartPrompts.Count == 0 ? "Available once a start prompt is registered" : null)"
+                        @onclick="() => mode = Mode.AdditionalPrompt">Deliver additional prompt (intervention)…</button>
             </div>
         }
 
@@ -203,45 +246,28 @@ else if (problem is null)
     private ApiProblem? problem;
     private Mode mode;
     private bool busy;
-    private string? startPromptText;
-    private bool? promptMatchesIteration;
-    private bool startPromptIsOverride;
+    private VerifiedText startPromptText = new(IntegrityResult.Missing, null);
+    private string iterationPromptSha = string.Empty;
     private string additionalPrompt = string.Empty;
     private ShepherdApi.Artifact? lastAdditional;
     private string? copyMessage;
     private long loadedId;
 
-    // Retry of a start prompt that was never registered: the text saved in the browser when Start was
-    // clicked. It is read after the first render (browser storage needs JS interop).
-    private string? pendingDraft;
+    // Retry of a start prompt that was never registered: the pending prompt saved in this browser at
+    // Start, if it can be established that it belongs to this execution record. Read after the first
+    // render (browser storage needs JS interop).
+    private PendingStartPromptLookup? pendingLookup;
     private bool pendingChecked;
-
-    private ShepherdApi.Artifact? StartPrompt => view?.DeliveredPrompts.FirstOrDefault();
-
-    // What "Register it now" registers: the exact text saved at Start, never the editable-looking
-    // iteration prompt by silent substitution. Without a saved copy it falls back to the iteration's
-    // prompt, and the page says so (see the markup above).
-    private string RetryPrompt => pendingDraft ?? view?.Iteration.Prompt ?? string.Empty;
-
-    private bool RetryIsOverride => view is not null && ExecutionRules.IsPromptOverride(RetryPrompt, view.Iteration.Prompt);
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (view is null || pendingChecked || StartPrompt is not null)
+        if (view is null || pendingChecked || view.StartPrompts.Count != 0)
         {
             return;
         }
 
         pendingChecked = true;
-        try
-        {
-            pendingDraft = (await Drafts.LoadAsync(StartExecutionWorkflow.StartPromptDraftKey(ExecutionId)))?.Text;
-        }
-        catch (Exception ex) when (ex is JSException or InvalidOperationException)
-        {
-            pendingDraft = null; // Browser storage unavailable: treated as no saved copy, which the page states.
-        }
-
+        pendingLookup = await Workflow.FindPendingStartPromptAsync(view.Execution);
         StateHasChanged();
     }
 
@@ -259,23 +285,16 @@ else if (problem is null)
     {
         problem = null;
         pendingChecked = false;
-        pendingDraft = null;
+        pendingLookup = null;
         try
         {
             view = await Loader.LoadAsync(ExecutionId);
-            startPromptText = StartPrompt is { } prompt ? await Registrar.ReadTextAsync(prompt) : null;
+            iterationPromptSha = new PromptText(view.Iteration.Prompt).Sha256;
 
-            // An execution's start prompt is the iteration's own prompt unless it was edited for that one
-            // execution; the registered artifact's provenance says which (StartPromptOverrideUri).
-            startPromptIsOverride = StartPrompt is { } start &&
-                StartExecutionWorkflow.IsStartPromptOverrideUri(ExecutionId, start.OriginalURI);
-
-            // Consistency check (AD-8): a start prompt that claims the iteration as its source must match the
-            // iteration's prompt, because configuration is frozen once an execution exists. An execution-specific
-            // prompt intentionally differs, so it is reported as such instead of as a mismatch.
-            promptMatchesIteration = StartPrompt is null
-                ? null
-                : string.Equals(StartPrompt.ShA256, new PromptText(view.Iteration.Prompt).Sha256, StringComparison.OrdinalIgnoreCase);
+            // Only a single, unambiguous start prompt is read, and only verified bytes are ever shown or copied.
+            startPromptText = view.StartPrompts.Count == 1
+                ? await Registrar.ReadVerifiedTextAsync(view.StartPrompts[0])
+                : new VerifiedText(IntegrityResult.Missing, null);
         }
         catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
         {
@@ -290,11 +309,9 @@ else if (problem is null)
         await LoadAsync();
     }
 
-    private Task RegisterStartPromptAsync() => RunAsync(async () =>
+    private Task RegisterPendingStartPromptAsync(PendingStartPrompt pending) => RunAsync(async () =>
     {
-        var prompt = RetryPrompt; // exactly what the page shows
-        await Workflow.RegisterStartPromptAsync(
-            ExecutionId, view!.Iteration.IterationID, prompt, ExecutionRules.IsPromptOverride(prompt, view.Iteration.Prompt));
+        await Workflow.RegisterStartPromptAsync(pending);
         await LoadAsync();
     });
 
@@ -308,19 +325,19 @@ else if (problem is null)
         copyMessage = null;
     });
 
-    // What is copied is read back from the store, so it is exactly the registered text (AD-8).
+    // What is copied is read back from the store and verified against the recorded SHA-256 (AD-8).
     private async Task CopyAsync(ShepherdApi.Artifact artifact)
     {
-        var text = await Registrar.ReadTextAsync(artifact);
-        if (text is null)
+        var verified = await Registrar.ReadVerifiedTextAsync(artifact);
+        if (verified.Text is null)
         {
-            copyMessage = "The registered prompt file could not be read from the artifact store.";
+            copyMessage = verified.Problem + " Nothing was copied.";
             return;
         }
 
         try
         {
-            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", verified.Text);
             copyMessage = $"Copied at {Utc.Format(Utc.Now)}.";
         }
         catch (JSException)

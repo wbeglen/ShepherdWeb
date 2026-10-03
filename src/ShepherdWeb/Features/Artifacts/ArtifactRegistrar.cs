@@ -57,9 +57,13 @@ public sealed class ArtifactRegistrar(
 
         if (reuseIfRegistered)
         {
+            // Identity is bytes AND provenance: the same text registered with a different role (for
+            // example as an intervention prompt) is different evidence and is never reused.
             var sha = new PromptText(promptText).Sha256;
             var existing = (await artifacts.ArtifactsGetAsync(executionId: executionId))
-                .FirstOrDefault(a => a.ArtifactTypeID == type.ArtifactTypeID && string.Equals(a.ShA256, sha, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(a => a.ArtifactTypeID == type.ArtifactTypeID &&
+                                     string.Equals(a.ShA256, sha, StringComparison.OrdinalIgnoreCase) &&
+                                     string.Equals(a.OriginalURI, originalUri, StringComparison.Ordinal));
             if (existing is not null)
             {
                 return existing;
@@ -72,16 +76,28 @@ public sealed class ArtifactRegistrar(
     }
 
     /// <summary>
-    /// The exact registered text of a prompt artifact, read back from the store so what the operator
-    /// copies is what was registered, not what an editor currently shows. Null if the file is missing
-    /// or lies outside the store.
+    /// The registered text of a prompt artifact, released only if the stored bytes match the artifact's
+    /// recorded SHA-256 (AD-8). The file is read once and those same bytes are hashed and returned, so
+    /// what is displayed or copied is exactly what was verified.
     /// </summary>
-    public async Task<string?> ReadTextAsync(Artifact artifact)
+    public async Task<VerifiedText> ReadVerifiedTextAsync(Artifact artifact)
     {
         var path = store.ResolvePath(artifact.StoredURI);
-        return path is not null && File.Exists(path)
-            ? Utf8NoBom.GetString(await File.ReadAllBytesAsync(path))
-            : null;
+        if (path is null)
+        {
+            return new VerifiedText(IntegrityResult.NotInStore, null);
+        }
+
+        if (!File.Exists(path))
+        {
+            return new VerifiedText(IntegrityResult.Missing, null);
+        }
+
+        var bytes = await File.ReadAllBytesAsync(path);
+        var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+        return string.Equals(actual, artifact.ShA256, StringComparison.OrdinalIgnoreCase)
+            ? new VerifiedText(IntegrityResult.Verified, Utf8NoBom.GetString(bytes))
+            : new VerifiedText(IntegrityResult.Mismatch, null);
     }
 
     /// <summary>Re-hashes an artifact's stored file and compares it with the recorded SHA-256.</summary>
@@ -111,6 +127,19 @@ public enum IntegrityResult
     Mismatch,
     Missing,
     NotInStore,
+}
+
+/// <param name="Text">The stored text, present only when <paramref name="Status"/> is Verified.</param>
+public sealed record VerifiedText(IntegrityResult Status, string? Text)
+{
+    /// <summary>The observed fact when the text cannot be released, or null when it is verified.</summary>
+    public string? Problem => Status switch
+    {
+        IntegrityResult.Verified => null,
+        IntegrityResult.Mismatch => "The stored file does not match the SHA-256 recorded for this artifact.",
+        IntegrityResult.Missing => "The stored file is missing from the artifact store.",
+        _ => "The stored file is not in this artifact store.",
+    };
 }
 
 /// <summary>A reference row ShepherdWeb relies on by name (AD-13) does not exist.</summary>

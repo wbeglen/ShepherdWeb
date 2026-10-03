@@ -19,6 +19,30 @@
     {
         <p>@blockedReason <a href="versions/@VersionId?tab=executions">Back to executions</a></p>
     }
+    else if (failedStart is { } failed)
+    {
+        <div class="alert alert-danger" role="alert">
+            <p class="mb-1">
+                <strong>Execution #@failed.Execution.ExecutionID was created. Its start prompt was not registered.</strong>
+            </p>
+            <p class="mb-1">@registrationProblem?.Title@(registrationProblem?.Detail is { } detail ? $": {detail}" : "")</p>
+            @if (!failed.DraftSaved)
+            {
+                <p class="mb-1">
+                    The prompt text is held only on this page. If you leave before registering it, it cannot be recovered,
+                    and the execution will remain incomplete.
+                </p>
+            }
+            <p class="mb-0">Nothing can be copied to the agent until the prompt is registered.</p>
+        </div>
+        <section class="small mb-3" aria-label="Prompt to register">
+            <div class="text-secondary">Exactly this text, decided at Start, will be registered.</div>
+            <pre class="prompt-view prompt-preview mb-1">@failed.Pending.Text</pre>
+            <div class="text-secondary">SHA-256 <Sha256Display Value="@failed.Pending.Sha256" /></div>
+        </section>
+        <button class="btn btn-danger" disabled="@retrying" @onclick="RetryRegistrationAsync">Retry registration</button>
+        <a class="btn btn-link" href="executions/@failed.Execution.ExecutionID">Go to execution #@failed.Execution.ExecutionID</a>
+    }
     else
     {
         <p class="text-secondary">
@@ -294,8 +318,16 @@ else if (problem is null)
             var result = await Workflow.StartAsync(form.ToRequest(statusId, Utc.Now), prompt, overridden);
             await Preferences.SetAsync(PreferenceKeys.Agent, form.AgentID.ToString());
 
-            // The execution page shows the registered prompt for copying, or offers a retry if
-            // registration failed after the execution was created.
+            if (result.RegistrationError is { } error)
+            {
+                // The execution exists but its start prompt is not registered. Stay here: the exact prompt
+                // decided at Start is still held in memory, so it can be retried without browser storage.
+                failedStart = result;
+                registrationProblem = DescribeRegistrationError(error);
+                confirming = false;
+                return;
+            }
+
             Navigation.NavigateTo($"executions/{result.Execution.ExecutionID}");
         }
         catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
@@ -308,4 +340,33 @@ else if (problem is null)
             starting = false;
         }
     }
+
+    // Set when the execution was created but its start prompt was not registered (findings 8, 9).
+    private StartExecutionResult? failedStart;
+    private ApiProblem? registrationProblem;
+    private bool retrying;
+
+    private async Task RetryRegistrationAsync()
+    {
+        retrying = true;
+        registrationProblem = null;
+        try
+        {
+            await Workflow.RegisterStartPromptAsync(failedStart!.Pending); // the exact text and provenance decided at Start
+            Navigation.NavigateTo($"executions/{failedStart.Execution.ExecutionID}");
+        }
+        catch (Exception ex) when (StartExecutionWorkflow.IsRegistrationFailure(ex))
+        {
+            registrationProblem = DescribeRegistrationError(ex);
+        }
+        finally
+        {
+            retrying = false;
+        }
+    }
+
+    private ApiProblem DescribeRegistrationError(Exception error) =>
+        ApiErrorMapper.IsApiFailure(error)
+            ? Errors.Map(error)
+            : new ApiProblem(ApiProblemKind.Unexpected, "Prompt not registered", error.Message);
 }

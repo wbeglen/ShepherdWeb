@@ -186,8 +186,8 @@ public class StartPromptOverrideComponentTests : AppTestContext
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
 
-        cut.WaitForAssertion(() => Assert.Contains("Edited for this execution before Start", cut.Markup));
-        Assert.DoesNotContain("Differs from the iteration", cut.Markup);
+        cut.WaitForAssertion(() => Assert.Contains("Provenance: edited for this execution before Start", cut.Markup));
+        Assert.DoesNotContain("differs from this iteration", cut.Markup);
     }
 
     [Fact]
@@ -197,22 +197,23 @@ public class StartPromptOverrideComponentTests : AppTestContext
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
 
-        cut.WaitForAssertion(() => Assert.Contains("Differs from the iteration", cut.Markup));
-        Assert.DoesNotContain("Edited for this execution before Start", cut.Markup);
+        cut.WaitForAssertion(() => Assert.Contains("differs from this iteration", cut.Markup));
+        Assert.DoesNotContain("Provenance: edited for this execution before Start", cut.Markup);
+        Assert.DoesNotContain("changed outside ShepherdWeb", cut.Markup); // observed fact only, no inferred cause
     }
 
     [Fact]
     public void ExecutionPage_RetryRegistersTheExactTextSavedAtStart_NotTheIterationsPrompt_AndOffersNoEditing()
     {
         ServeExecution();
-        Drafts.Items["execution:11:start-prompt"] = new Draft("Edited\r\nfor this run.", DateTime.UtcNow);
+        Drafts.Items["execution:11:start-prompt"] = new Draft(SavedAtStart("Edited\r\nfor this run.", overridden: true).Serialize(), DateTime.UtcNow);
         Api.On(HttpMethod.Post, "/api/artifacts", HttpStatusCode.Created, CreatedArtifact);
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
         cut.WaitForAssertion(() => Assert.Contains("Exactly this text will be registered", cut.Markup));
 
         Assert.Empty(cut.FindAll("textarea")); // shown, never editable
-        Assert.Contains("differs from the iteration's prompt", cut.Markup);
+        Assert.Contains("edited for this execution before Start", cut.Markup);
         cut.FindAll("button").Single(b => b.TextContent == "Register it now").Click();
 
         cut.WaitForAssertion(() => Assert.Contains(Api.Requests, r => r.Method == HttpMethod.Post && r.Path == "/api/artifacts"));
@@ -224,20 +225,26 @@ public class StartPromptOverrideComponentTests : AppTestContext
     }
 
     [Fact]
-    public void ExecutionPage_RetryWithNoSavedCopy_SaysSoPlainly_AndUsesTheIterationsPromptWithIterationProvenance()
+    public void ExecutionPage_RetryWithNoSavedCopy_RegistersNothing_AndRequiresANewAttempt()
     {
+        // Owner decision (fix 6): if the exact Start prompt cannot be established, no substitute is offered.
         ServeExecution();
-        Api.On(HttpMethod.Post, "/api/artifacts", HttpStatusCode.Created, CreatedArtifact);
 
         var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
-        cut.WaitForAssertion(() => Assert.Contains("No saved copy of the prompt entered at Start was found", cut.Markup));
-        Assert.Empty(cut.FindAll("textarea"));
+        cut.WaitForAssertion(() => Assert.Contains("The prompt text entered at Start is not saved in this browser", cut.Markup));
 
-        cut.FindAll("button").Single(b => b.TextContent == "Register it now").Click();
-
-        cut.WaitForAssertion(() => Assert.Contains(Api.Requests, r => r.Method == HttpMethod.Post && r.Path == "/api/artifacts"));
-        var artifact = RegisteredArtifact();
-        Assert.Equal(new PromptText("Build the thing.").Sha256, artifact.GetProperty("shA256").GetString());
-        Assert.Equal("urn:goodshepherd:iteration:7:prompt", artifact.GetProperty("originalURI").GetString());
+        Assert.Contains("cannot establish the exact prompt this execution was started with", cut.Markup);
+        Assert.Contains("start a new attempt", cut.Markup);
+        Assert.DoesNotContain(cut.FindAll("button"), b => b.TextContent == "Register it now");
+        Assert.DoesNotContain("Copy prompt", cut.Markup);
+        Assert.DoesNotContain(Api.Requests, r => r.Method == HttpMethod.Post);
     }
+
+    /// <summary>The pending start prompt the Start page would have saved for execution 11 (Json.Execution).</summary>
+    internal static PendingStartPrompt SavedAtStart(string text, bool overridden) => PendingStartPrompt.For(
+        new ShepherdWeb.Infrastructure.Api.Generated.Execution
+        {
+            ExecutionID = 11, IterationID = 7, StartUTC = new DateTime(2026, 9, 2, 9, 0, 0, DateTimeKind.Utc),
+        },
+        text, overridden);
 }

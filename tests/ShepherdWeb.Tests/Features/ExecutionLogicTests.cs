@@ -279,9 +279,11 @@ public class StartExecutionWorkflowTests : AppTestContext
     {
         var sha = new PromptText("Build the thing.").Sha256;
         Api.On(HttpMethod.Get, "/api/artifacts", HttpStatusCode.OK,
-            $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"shA256":"{{sha}}","receivedUTC":"2026-09-02T09:00:00","byteLength":16}]""");
+            $$"""[{"artifactID":5,"executionID":11,"artifactTypeID":1,"originalURI":"urn:goodshepherd:iteration:7:prompt","shA256":"{{sha}}","receivedUTC":"2026-09-02T09:00:00","byteLength":16}]""");
 
-        var artifact = await Workflow.RegisterStartPromptAsync(11, 7, "Build the thing.");
+        var artifact = await Workflow.RegisterStartPromptAsync(PendingStartPrompt.For(
+            new Execution { ExecutionID = 11, IterationID = 7, StartUTC = new DateTime(2026, 9, 2, 9, 0, 0, DateTimeKind.Utc) },
+            "Build the thing.", overridden: false));
 
         Assert.Equal(5, artifact.ArtifactID);
         Assert.DoesNotContain(Api.Requests, r => r.Method == HttpMethod.Post);

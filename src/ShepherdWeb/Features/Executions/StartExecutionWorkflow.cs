@@ -11,82 +11,114 @@ namespace ShepherdWeb.Features.Executions;
 /// "The gates open" (docs/ARCHITECTURE.md AD-8): create the execution, then register the exact
 /// prompt it receives. The prompt is only released for copying after registration succeeds.
 /// The two steps cannot be atomic (they are two ShepherdAPI calls around a file write). If the
-/// execution is created but the prompt is not registered, the result says so and the execution page
-/// offers a retry, which <see cref="ArtifactRegistrar.RegisterDeliveredPromptAsync"/> makes safe.
+/// execution is created but the prompt is not registered, the result says so, and a retry registers
+/// exactly the <see cref="PendingStartPrompt"/> decided at Start: the same text and the same provenance.
 ///
 /// The prompt delivered at the start is the iteration's prompt unless the operator edited it for this
-/// execution (<c>overridden</c>). The registered artifact is the authoritative record either way; an
-/// override differs only in its provenance (<see cref="StartPromptOverrideUri"/>).
+/// execution. The registered artifact is the authoritative record either way; the two differ only in
+/// provenance (<see cref="PromptProvenance"/>).
 /// </summary>
 public sealed class StartExecutionWorkflow(IExecutionsClient executions, ArtifactRegistrar registrar, IDraftStore drafts)
 {
     public async Task<StartExecutionResult> StartAsync(CreateExecutionRequest request, string prompt, bool overridden = false)
     {
         var execution = await executions.ExecutionsPostAsync(request); // A failure here leaves nothing behind.
+        var pending = PendingStartPrompt.For(execution, prompt, overridden);
 
-        // The execution now exists but its prompt is not yet registered. Keep the exact text in the
-        // browser until it is, so a retry registers precisely what was meant to be delivered.
-        await KeepStartPromptAsync(execution.ExecutionID, prompt);
+        // The execution now exists but its prompt is not yet registered. Keep exactly what was decided in
+        // the browser until it is, so a later retry can reproduce it.
+        var draftSaved = await KeepAsync(pending);
 
         try
         {
-            var artifact = await RegisterStartPromptAsync(execution.ExecutionID, execution.IterationID, prompt, overridden);
-            return new StartExecutionResult(execution, artifact, null);
+            var artifact = await RegisterStartPromptAsync(pending);
+            return new StartExecutionResult(execution, pending, artifact, null, draftSaved);
         }
         catch (Exception ex) when (IsRegistrationFailure(ex))
         {
-            return new StartExecutionResult(execution, null, ex);
+            return new StartExecutionResult(execution, pending, null, ex, draftSaved);
         }
     }
 
     /// <summary>
-    /// Registers (or finds the already-registered) prompt delivered at the start of an execution. An
-    /// <paramref name="overridden"/> prompt is recorded with execution-specific provenance instead of the iteration's.
+    /// Registers (or finds the already-registered) start prompt exactly as decided at Start. An existing
+    /// artifact is reused only if it has the same bytes <em>and</em> the same provenance.
     /// </summary>
-    public async Task<Artifact> RegisterStartPromptAsync(long executionId, long iterationId, string prompt, bool overridden = false)
+    public async Task<Artifact> RegisterStartPromptAsync(PendingStartPrompt pending)
     {
         var artifact = await registrar.RegisterDeliveredPromptAsync(
-            executionId, prompt,
-            originalName: overridden ? $"execution-{executionId}-prompt.txt" : $"iteration-{iterationId}-prompt.txt",
-            originalUri: overridden ? StartPromptOverrideUri(executionId) : $"urn:goodshepherd:iteration:{iterationId}:prompt",
-            reuseIfRegistered: true);
+            pending.ExecutionId, pending.Text, pending.OriginalName, pending.OriginalUri, reuseIfRegistered: true);
 
-        await ForgetStartPromptAsync(executionId); // Registered: the artifact is now the record.
+        await ForgetAsync(pending.ExecutionId); // Registered: the artifact is now the record.
         return artifact;
+    }
+
+    /// <summary>
+    /// The start prompt saved in this browser for <paramref name="execution"/>, if it can be established
+    /// that it belongs to that execution record and is intact. Otherwise the observed reason there is none.
+    /// </summary>
+    public async Task<PendingStartPromptLookup> FindPendingStartPromptAsync(Execution execution)
+    {
+        Draft? draft;
+        try
+        {
+            draft = await drafts.LoadAsync(StartPromptDraftKey(execution.ExecutionID));
+        }
+        catch (Exception ex) when (IsDraftStoreFailure(ex))
+        {
+            return new PendingStartPromptLookup(null, "Browser storage is not available, so a prompt saved at Start cannot be read.");
+        }
+
+        if (draft is null)
+        {
+            return new PendingStartPromptLookup(null, "The prompt text entered at Start is not saved in this browser.");
+        }
+
+        if (PendingStartPrompt.TryDeserialize(draft.Text) is not { } pending)
+        {
+            return new PendingStartPromptLookup(null,
+                "A prompt saved in this browser was found, but it is not in a form that identifies its execution record.");
+        }
+
+        return pending.ProblemFor(execution) is { } problem
+            ? new PendingStartPromptLookup(null, problem)
+            : new PendingStartPromptLookup(pending, null);
     }
 
     /// <summary>Registers further prompt text delivered during an exceptional intervention (§3 rule 6).</summary>
     public Task<Artifact> RegisterAdditionalPromptAsync(long executionId, string prompt) =>
         registrar.RegisterDeliveredPromptAsync(
             executionId, prompt,
-            originalName: $"execution-{executionId}-additional-prompt.txt",
-            originalUri: $"urn:goodshepherd:execution:{executionId}:additional-prompt",
+            originalName: PromptProvenance.InterventionName(executionId),
+            originalUri: PromptProvenance.InterventionUri(executionId),
             reuseIfRegistered: false);
 
     /// <summary>Provenance of a start prompt that was edited for one execution: where the text came from.</summary>
-    public static string StartPromptOverrideUri(long executionId) => $"urn:goodshepherd:execution:{executionId}:prompt";
+    public static string StartPromptOverrideUri(long executionId) => PromptProvenance.ExecutionStartUri(executionId);
 
     /// <summary>True if an artifact's OriginalURI says it is this execution's own (edited) start prompt.</summary>
     public static bool IsStartPromptOverrideUri(long executionId, string? originalUri) =>
-        string.Equals(originalUri, StartPromptOverrideUri(executionId), StringComparison.Ordinal);
+        PromptProvenance.IsExecutionStartUri(originalUri, executionId);
 
-    /// <summary>The browser-draft key holding an execution's start prompt until it has been registered.</summary>
+    /// <summary>The browser-draft key holding an execution's pending start prompt until it has been registered.</summary>
     public static string StartPromptDraftKey(long executionId) => $"execution:{executionId}:start-prompt";
 
     // The draft is a safety net, never a gate: if the browser cannot store it, starting still proceeds
-    // and registration is still attempted immediately; only a later retry would then lack the text.
-    private async Task KeepStartPromptAsync(long executionId, string prompt)
+    // and registration is still attempted immediately. The result reports whether it was saved.
+    private async Task<bool> KeepAsync(PendingStartPrompt pending)
     {
         try
         {
-            await drafts.SaveAsync(StartPromptDraftKey(executionId), prompt);
+            await drafts.SaveAsync(StartPromptDraftKey(pending.ExecutionId), pending.Serialize());
+            return true;
         }
         catch (Exception ex) when (IsDraftStoreFailure(ex))
         {
+            return false;
         }
     }
 
-    private async Task ForgetStartPromptAsync(long executionId)
+    private async Task ForgetAsync(long executionId)
     {
         try
         {
@@ -105,6 +137,13 @@ public sealed class StartExecutionWorkflow(IExecutionsClient executions, Artifac
         ApiErrorMapper.IsApiFailure(ex) || ex is IOException or UnauthorizedAccessException or MissingConventionException;
 }
 
+/// <param name="Pending">What was decided at Start: the exact text and its provenance.</param>
 /// <param name="PromptArtifact">Null when the execution was created but its prompt could not be registered.</param>
 /// <param name="RegistrationError">Why the prompt was not registered, when it wasn't.</param>
-public sealed record StartExecutionResult(Execution Execution, Artifact? PromptArtifact, Exception? RegistrationError);
+/// <param name="DraftSaved">Whether the pending prompt was saved in the browser for a later retry.</param>
+public sealed record StartExecutionResult(
+    Execution Execution,
+    PendingStartPrompt Pending,
+    Artifact? PromptArtifact,
+    Exception? RegistrationError,
+    bool DraftSaved);
