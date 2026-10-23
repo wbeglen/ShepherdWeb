@@ -138,19 +138,31 @@ public class ScoreRuleFormTests
 public class GeneratedClientCustomizationTests
 {
     [Fact]
-    public async Task Delete_Accepts204NoContent()
+    public async Task DeclaredDelete_Accepts204NoContent()
     {
+        // The contract declares 204 for this delete; the generated code accepts it without R8.
         var api = new StubShepherdApi().On(HttpMethod.Delete, "/api/parameters/3", HttpStatusCode.NoContent);
 
-        await new ParametersClient(api.CreateHttpClient()).ParametersDeleteAsync(3); // would throw ApiException without the fix
+        await new ParametersClient(api.CreateHttpClient()).ParametersDeleteAsync(3);
 
         Assert.Single(api.Requests);
     }
 
     [Fact]
-    public async Task Create_Accepts201Created_AndReturnsTheCreatedEntity()
+    public async Task DeclaredCreate_Accepts201Created_AndReturnsTheCreatedEntity()
     {
-        // ShepherdAPI answers every POST-create with 201 (CreatedAtAction) while documenting 200.
+        var api = new StubShepherdApi().On(HttpMethod.Post, "/api/score-rules", HttpStatusCode.Created,
+            """{"scoreRuleID":7,"experimentVersionID":1,"phaseID":1,"scoreCategoryID":1,"weightPercent":100,"minScore":0,"maxScore":5,"active":true,"ruleNotes":null}""");
+
+        var created = await new ScoreRulesClient(api.CreateHttpClient()).ScoreRulesPostAsync(new CreateScoreRuleRequest());
+
+        Assert.Equal(7, created.ScoreRuleID);
+    }
+
+    [Fact]
+    public async Task UndeclaredCreate_Accepts201Created_ThroughR8()
+    {
+        // This create is still documented as 200; R8 maps the real 201 (GeneratedClientCustomization).
         var api = new StubShepherdApi().On(HttpMethod.Post, "/api/artifact-types", HttpStatusCode.Created,
             """{"artifactTypeID":1,"name":"DeliveredPrompt","description":null}""");
 
@@ -161,12 +173,27 @@ public class GeneratedClientCustomizationTests
     }
 
     [Fact]
-    public async Task Delete_StillReportsRealFailures()
+    public async Task UndeclaredCreate_ExperimentVersion_Accepts201Created_ThroughR8()
     {
-        var api = new StubShepherdApi().On(HttpMethod.Delete, "/api/parameters/3", HttpStatusCode.Conflict,
-            """{"title":"Record Locked","status":409}""");
+        var api = new StubShepherdApi().On(HttpMethod.Post, "/api/experiment-versions", HttpStatusCode.Created,
+            """{"experimentVersionID":4,"name":"N","versionLabel":"1","statusID":1,"effectiveDateUTC":"2026-10-23T00:00:00Z","description":"d","lockedUTC":null}""");
 
-        var ex = await Assert.ThrowsAsync<ApiException>(() => new ParametersClient(api.CreateHttpClient()).ParametersDeleteAsync(3));
+        var created = await new ExperimentVersionsClient(api.CreateHttpClient())
+            .ExperimentVersionsPostAsync(new CreateExperimentVersionRequest { EffectiveDateUTC = new DateTime(2026, 10, 23, 0, 0, 0, DateTimeKind.Utc) });
+
+        Assert.Equal(4, created.ExperimentVersionID);
+    }
+
+    [Fact]
+    public async Task TypedFailure_KeepsTheResponseBodyForTheMapper()
+    {
+        // Declared 409s throw ApiException<ProblemDetails>; ReadResponseAsString keeps the raw body.
+        const string body = """{"title":"Version Locked","status":409,"detail":"locked","code":"version-locked"}""";
+        var api = new StubShepherdApi().On(HttpMethod.Delete, "/api/parameters/3", HttpStatusCode.Conflict, body);
+
+        var ex = await Assert.ThrowsAsync<ApiException<ProblemDetails>>(() => new ParametersClient(api.CreateHttpClient()).ParametersDeleteAsync(3));
+
         Assert.Equal(409, ex.StatusCode);
+        Assert.Equal(body, ex.Response);
     }
 }

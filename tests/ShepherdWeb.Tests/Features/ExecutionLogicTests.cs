@@ -98,16 +98,17 @@ public class ExecutionRulesTests
     }
 
     [Fact]
-    public void RulesFor_UsesTheExecutionsPhase_AndSkipsRetiredRules()
+    public void RulesFor_UsesEveryRuleOfTheExecutionsPhase()
     {
         ScoreRule[] rules =
         [
-            new() { ScoreRuleID = 1, PhaseID = 1, RowState = "A" },
-            new() { ScoreRuleID = 2, PhaseID = 2, RowState = "A" },
-            new() { ScoreRuleID = 3, PhaseID = 1, RowState = "D" },
+            new() { ScoreRuleID = 1, PhaseID = 1, Active = true },
+            new() { ScoreRuleID = 2, PhaseID = 2, Active = true },
+            new() { ScoreRuleID = 3, PhaseID = 1, Active = false },
         ];
 
-        Assert.Equal([1], ExecutionRules.RulesFor(new Execution { PhaseID = 1 }, rules).Select(r => r.ScoreRuleID));
+        // ScoreRule.Active is ignored, as it is by ShepherdAPI (Issue #7).
+        Assert.Equal([1, 3], ExecutionRules.RulesFor(new Execution { PhaseID = 1 }, rules).Select(r => r.ScoreRuleID));
     }
 }
 

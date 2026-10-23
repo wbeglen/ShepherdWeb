@@ -177,5 +177,5 @@ public static class Json
         """[{"parameterID":3,"experimentVersionID":1,"name":"Timeout","value":"30","unit":"min","notes":null}]""";
 
     public const string OneScoreRule =
-        """[{"scoreRuleID":5,"experimentVersionID":1,"phaseID":1,"scoreCategoryID":1,"weightPercent":50,"minScore":0,"maxScore":5,"active":true,"ruleNotes":null,"rowState":"A"}]""";
+        """[{"scoreRuleID":5,"experimentVersionID":1,"phaseID":1,"scoreCategoryID":1,"weightPercent":50,"minScore":0,"maxScore":5,"active":true,"ruleNotes":null}]""";
 }

@@ -65,9 +65,9 @@ public static class ExecutionRules
             .DefaultIfEmpty(0)
             .Max() + 1;
 
-    /// <summary>The score rules an execution is scored against: non-retired rules for its phase.</summary>
+    /// <summary>The score rules an execution is scored against: every rule for its phase (ShepherdAPI Issue #7).</summary>
     public static IReadOnlyList<ScoreRule> RulesFor(Execution execution, IEnumerable<ScoreRule> versionRules) =>
-        versionRules.Where(r => r.PhaseID == execution.PhaseID && r.RowState != "D").ToList();
+        versionRules.Where(r => r.PhaseID == execution.PhaseID).ToList();
 
     /// <summary>Why a score is not acceptable for a rule, or null. ShepherdAPI does not check this yet (A3).</summary>
     public static string? ScoreProblem(decimal? score, ScoreRule rule)

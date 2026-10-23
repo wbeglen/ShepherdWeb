@@ -1,7 +1,6 @@
 @page "/executions/{ExecutionId:long}/scoring"
 @inject ExecutionLoader Loader
 @inject ShepherdApi.IScoreObservationsClient Observations
-@inject ShepherdApi.IScoreRulesClient ScoreRules
 @inject ReferenceData ReferenceData
 @inject IPreferenceStore Preferences
 @inject ApiErrorMapper Errors
@@ -150,15 +149,10 @@ else if (problem is null)
             view = viewTask.Result;
             allObservations = observationsTask.Result;
 
+            // The version's list holds every rule: a rule an observation uses can never be deleted (ShepherdAPI Issue #7).
             foreach (var rule in view.Configuration.ScoreRules)
             {
                 rulesById[rule.ScoreRuleID] = rule;
-            }
-
-            // Observations can reference rules that were retired later; the version's list omits them.
-            foreach (var missing in allObservations.Select(o => o.ScoreRuleID).Distinct().Where(id => !rulesById.ContainsKey(id)))
-            {
-                rulesById[missing] = await ScoreRules.ScoreRulesGetAsync(missing);
             }
 
             BuildRows();
@@ -269,8 +263,8 @@ else if (problem is null)
 
     private string RuleLabel(int scoreRuleId) =>
         rulesById.TryGetValue(scoreRuleId, out var rule)
-            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID) + (rule.RowState == "D" ? " (retired rule)" : "")
-            : $"Rule #{scoreRuleId}";
+            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID)
+            : $"Rule #{scoreRuleId}"; // defensive only
 
     private string Better(int scoreCategoryId) =>
         ReferenceData.ScoreCategories.FirstOrDefault(c => c.ScoreCategoryID == scoreCategoryId)?.HigherIsBetter switch

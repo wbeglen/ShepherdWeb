@@ -4,22 +4,22 @@
 
 | Field | Value |
 |---|---|
-| Source | `GET http://localhost:5231/swagger/v1/swagger.json` from a locally running ShepherdAPI (Development) |
-| ShepherdAPI commit | `dce802f8c71ed20caf41327f0d34b28f9ba43c6d` (2026-09-28, "Implement ScoreRule RowState lifecycle") |
-| Verified | 2026-09-29: the running API's document is identical to this snapshot |
-| First captured | 2026-09-25, from `3881ed6` plus the then-uncommitted ScoreRule changes that `dce802f` later committed |
+| Source | ShepherdAPI's committed `contracts/openapi.json`, copied unchanged |
+| ShepherdAPI commit | `b0125d4d65ebca1c5a055d2bd16c14c945411095` (2026-10-23, branch `issue-7-scorerule-physical-delete`, "Make Version 10 the authoritative database baseline"; database V10, Issues #1–#10) |
+| Verified | 2026-10-23: identical to ShepherdAPI's committed file at that commit, which ShepherdAPI's `OpenApiSnapshotTests` keeps identical to the running API's document |
+| Previous snapshot | `dce802f` (2026-09-28), captured from the running API |
 
-ShepherdAPI's own committed `contracts/openapi.json` was not regenerated in `dce802f` and still describes the older ScoreRule API (with `PUT /api/score-rules/{id}`). Use the running API, not that file, when recapturing.
+ShepherdAPI's committed `contracts/openapi.json` is guarded by a snapshot test (it fails when the file differs from the generated document), so it is the file to copy.
 
 ## Known contract gaps (worked around in ShepherdWeb)
 
-- Every operation is documented as `200`, but creates return `201 Created` and deletes `204 No Content` (recommendation R8). See `src/ShepherdWeb/Infrastructure/Api/GeneratedClientCustomization.cs`.
+- Creates on agents, artifact types, experiment versions, phases, raters, score categories and statuses are still documented as `200`, but return `201 Created` (recommendation R8). Every other create and delete declares its real `201`/`204`. See `src/ShepherdWeb/Infrastructure/Api/GeneratedClientCustomization.cs`, which applies the 201/204-to-200 mapping per client.
 - No `operationId`s, so list and single-item calls share a method name (recommendation R4). List calls use named arguments.
 - `Artifact.SHA256` is camel-cased to `shA256`, so the generated property is `ShA256`.
 
 ## Updating
 
-1. Run ShepherdAPI locally (`dotnet run --project src/ShepherdAPI.Api --launch-profile http`).
-2. Save `http://localhost:5231/swagger/v1/swagger.json` over `shepherdapi.openapi.json`.
-3. Update the table above with the ShepherdAPI commit and date.
+1. Copy ShepherdAPI's `contracts/openapi.json` (at the commit you build against) over `shepherdapi.openapi.json`.
+2. Update the table above with the ShepherdAPI commit and date.
+3. Check which clients now declare `201`/`204` and update `GeneratedClientCustomization.cs`: a client that declares them must not use the R8 mapping.
 4. Rebuild ShepherdWeb and fix anything the regenerated client breaks.

@@ -3,7 +3,6 @@
    has ended. ShepherdAPI lists observations per execution only, so this makes one call per execution
    (A4 would make it one). *@
 @inject ShepherdApi.IScoreObservationsClient Observations
-@inject ShepherdApi.IScoreRulesClient ScoreRules
 @inject ReferenceData ReferenceData
 @inject ApiErrorMapper Errors
 
@@ -117,16 +116,13 @@ else
             var executions = Configuration.Executions;
             var lists = await Task.WhenAll(executions.Select(e => Observations.ScoreObservationsGetAsync(executionId: e.ExecutionID)));
 
+            // The version's list holds every rule: a rule an observation uses can never be deleted (ShepherdAPI Issue #7).
             foreach (var rule in Configuration.ScoreRules)
             {
                 rulesById[rule.ScoreRuleID] = rule;
             }
 
             var observations = executions.Zip(lists).SelectMany(pair => pair.Second.Select(o => new Row(pair.First, o))).ToList();
-            foreach (var missing in observations.Select(r => r.Observation.ScoreRuleID).Distinct().Where(id => !rulesById.ContainsKey(id)))
-            {
-                rulesById[missing] = await ScoreRules.ScoreRulesGetAsync(missing); // retired since it was used
-            }
 
             unscoredEnded = executions.Zip(lists).Count(pair => pair.First.EndUTC is not null && pair.Second.Count == 0);
             rows = observations
@@ -150,6 +146,6 @@ else
 
     private string RuleLabel(int scoreRuleId) =>
         rulesById.TryGetValue(scoreRuleId, out var rule)
-            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID) + (rule.RowState == "D" ? " (retired rule)" : "")
-            : $"Rule #{scoreRuleId}";
+            ? ReferenceData.ScoreCategoryName(rule.ScoreCategoryID)
+            : $"Rule #{scoreRuleId}"; // defensive only
 }
