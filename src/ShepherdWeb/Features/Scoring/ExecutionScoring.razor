@@ -205,7 +205,7 @@ else if (problem is null)
 
     private async Task SaveAsync(ScoreRow row)
     {
-        // Client-side check only: ShepherdAPI does not validate the range yet (A3).
+        // Checked before sending; ShepherdAPI also rejects it (400 out-of-range-score, A3), without field errors.
         if (row.Problem is { } scoreProblem)
         {
             row.Message = scoreProblem;
@@ -226,7 +226,7 @@ else if (problem is null)
         catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
         {
             var mapped = Errors.Map(ex);
-            row.Message = mapped.Kind == ApiProblemKind.Conflict
+            row.Message = mapped.Code == "duplicate-observation"
                 ? "This rater already has a score for this rule. Reload the page to correct it."
                 : mapped.Detail ?? mapped.Title;
             if (mapped.Kind == ApiProblemKind.RecordLocked)

@@ -52,6 +52,83 @@ public class ApiErrorMapperTests
         Assert.Equal(ApiProblemKind.Conflict, problem.Kind);
     }
 
+    [Theory]
+    [InlineData("version-locked", "Version Locked")]
+    [InlineData("design-frozen", "Design Frozen")]
+    [InlineData("execution-run-facts-frozen", "Execution Run-Facts Frozen")]
+    public async Task Conflict_WithALockCode_IsRecordLocked_AndKeepsTheApiTitle(string code, string title)
+    {
+        var problem = await ProblemFor(HttpStatusCode.Conflict,
+            $$"""{"title":"{{title}}","status":409,"detail":"No longer changeable.","code":"{{code}}"}""");
+
+        Assert.Equal(ApiProblemKind.RecordLocked, problem.Kind);
+        Assert.Equal(title, problem.Title);
+        Assert.Equal(code, problem.Code);
+        Assert.Equal("No longer changeable.", problem.Detail);
+    }
+
+    [Theory]
+    [InlineData("duplicate-observation", "Duplicate Observation")]
+    [InlineData("invalid-rule-configuration", "Invalid Rule Configuration")]
+    [InlineData("finalize-execution-not-ended", "Finalization Failed: Execution Not Ended")]
+    [InlineData("finalize-phase-weight-invalid", "Finalization Failed: Phase Weight Total Invalid")]
+    [InlineData("lock-requires-finalization", "Lock Requires Finalization")]
+    public async Task Conflict_WithAnyOtherCode_IsConflict_AndKeepsTheApiTitle(string code, string title)
+    {
+        var problem = await ProblemFor(HttpStatusCode.Conflict,
+            $$"""{"title":"{{title}}","status":409,"detail":"Why.","code":"{{code}}"}""");
+
+        Assert.Equal(ApiProblemKind.Conflict, problem.Kind);
+        Assert.Equal(title, problem.Title);
+        Assert.Equal(code, problem.Code);
+        Assert.False(problem.Retryable);
+    }
+
+    [Fact]
+    public async Task Conflict_TheRecordLockedTitle_WinsOnlyWithoutACode()
+    {
+        // A code always decides; the old title is a fallback for responses that have none.
+        var problem = await ProblemFor(HttpStatusCode.Conflict,
+            """{"title":"Record Locked","status":409,"code":"duplicate-key"}""");
+
+        Assert.Equal(ApiProblemKind.Conflict, problem.Kind);
+    }
+
+    [Fact]
+    public async Task RetryableConflict_IsMarkedRetryable()
+    {
+        var problem = await ProblemFor(HttpStatusCode.Conflict,
+            """{"title":"Concurrent Operation Conflict","status":409,"detail":"Try again.","code":"retryable-conflict","retryable":true}""");
+
+        Assert.Equal(ApiProblemKind.Conflict, problem.Kind);
+        Assert.True(problem.Retryable);
+    }
+
+    [Fact]
+    public async Task DeclaredConflict_FromTheTypedException_IsMappedFromItsBody()
+    {
+        // Score-rule delete declares 409 ProblemDetails, so the client throws ApiException<ProblemDetails>.
+        var api = new StubShepherdApi().On(HttpMethod.Delete, "/api/score-rules/5", HttpStatusCode.Conflict,
+            """{"title":"Design Frozen","status":409,"detail":"ExperimentVersion 1 has executions.","code":"design-frozen"}""");
+        var ex = await Assert.ThrowsAsync<ApiException<ProblemDetails>>(() => new ScoreRulesClient(api.CreateHttpClient()).ScoreRulesDeleteAsync(5));
+
+        var problem = _mapper.Map(ex);
+
+        Assert.Equal(ApiProblemKind.RecordLocked, problem.Kind);
+        Assert.Equal("design-frozen", problem.Code);
+        Assert.Equal("ExperimentVersion 1 has executions.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task Conflict_WithAnUnparsableBody_IsAGenericConflict()
+    {
+        var problem = await ProblemFor(HttpStatusCode.Conflict, "<html>proxy error</html>");
+
+        Assert.Equal(ApiProblemKind.Conflict, problem.Kind);
+        Assert.Equal("Conflict", problem.Title);
+        Assert.Null(problem.Code);
+    }
+
     [Fact]
     public async Task NotFound_IsNotFound()
     {

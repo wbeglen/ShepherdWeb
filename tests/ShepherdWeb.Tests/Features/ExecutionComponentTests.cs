@@ -142,6 +142,7 @@ public class ExecutionComponentTests : AppTestContext
         var cut = Render<ExecutionScoring>(p => p.Add(x => x.ExecutionId, 11));
         cut.WaitForAssertion(() => cut.Find("#rater"));
         cut.Find("#rater").Change("1");
+        cut.WaitForAssertion(() => cut.Find("input[type=number]")); // the rows render after the rater change completes
         cut.Find("input[type=number]").Change("4.5");
         cut.FindAll("button").Single(b => b.TextContent.Trim() == "Save").Click();
 
@@ -161,6 +162,7 @@ public class ExecutionComponentTests : AppTestContext
         var cut = Render<ExecutionScoring>(p => p.Add(x => x.ExecutionId, 11));
         cut.WaitForAssertion(() => cut.Find("#rater"));
         cut.Find("#rater").Change("1");
+        cut.WaitForAssertion(() => cut.Find("input[type=number]"));
         cut.Find("input[type=number]").Change("6");
         cut.FindAll("button").Single(b => b.TextContent.Trim() == "Save").Click();
 
