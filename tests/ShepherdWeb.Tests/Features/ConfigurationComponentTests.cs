@@ -189,11 +189,26 @@ public class ConfigurationComponentTests : AppTestContext
     }
 
     [Fact]
-    public async Task VersionOverview_Lock_WarnsAboutExecutionsInProgress_AndSendsLockedStatus()
+    public async Task VersionOverview_Lock_IsDisabledWhileAnExecutionIsInProgress()
     {
+        // ShepherdAPI refuses to finalize with an open execution (finalize-execution-not-ended).
         await LoadedReferenceDataAsync();
         ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);
-        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Locked));
+        var config = await LoadConfigurationAsync();
+
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config));
+
+        Assert.True(cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).HasAttribute("disabled"));
+        Assert.Contains("End it before locking", cut.Markup);
+    }
+
+    [Fact]
+    public async Task VersionOverview_Lock_FinalizesThenSetsTheLockedStatus()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecution);
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Draft))
+            .On(HttpMethod.Put, "/api/experiment-versions/1/status", HttpStatusCode.OK, Json.Version(true, Json.Locked));
         var config = await LoadConfigurationAsync();
         var changed = false;
 
@@ -201,11 +216,58 @@ public class ConfigurationComponentTests : AppTestContext
         cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
 
         Assert.Contains("cannot be undone", cut.Markup);
-        Assert.Contains("still in progress", cut.Markup);
+        Assert.Contains("Status is then set to “Locked”", cut.Markup);
+        Assert.DoesNotContain("still in progress", cut.Markup);
         cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
 
         cut.WaitForAssertion(() => Assert.True(changed));
-        Assert.Contains("\"statusID\":2", Api.Requests.Single(r => r.Path.EndsWith("/lock")).Body);
+        var writes = Api.Requests.Where(r => r.Method != HttpMethod.Get).ToList();
+        Assert.Equal(["/api/experiment-versions/1/lock", "/api/experiment-versions/1/status"], writes.Select(r => r.Path));
+        Assert.DoesNotContain("\"statusID\":2", writes[0].Body); // the lock carries no status
+        Assert.Contains("\"statusID\":2", writes[1].Body);
+        Assert.DoesNotContain("not updated", cut.Markup);
+    }
+
+    [Fact]
+    public async Task VersionOverview_Lock_FinalizationFailure_ShowsWhy_AndSetsNoStatus()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecution);
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.Conflict,
+            """{"title":"Finalization Failed: Execution Without Observation","status":409,"detail":"1 Execution(s) have no observation: 11.","code":"finalize-execution-without-observation"}""");
+        var config = await LoadConfigurationAsync();
+        var changed = false;
+
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => changed = true));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
+
+        cut.WaitForAssertion(() => Assert.Contains("Finalization Failed: Execution Without Observation", cut.Markup));
+        Assert.Contains("have no observation: 11", cut.Markup);
+        Assert.False(changed);
+        Assert.DoesNotContain(Api.Requests, r => r.Path.EndsWith("/status"));
+    }
+
+    [Fact]
+    public async Task VersionOverview_Lock_StatusFailure_ReportsTheLockSucceeded_AndDoesNotRetryIt()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecution);
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Draft))
+            .On(HttpMethod.Put, "/api/experiment-versions/1/status", HttpStatusCode.InternalServerError,
+                """{"title":"Internal Server Error","status":500,"detail":"boom"}""");
+        var config = await LoadConfigurationAsync();
+        var changed = false;
+
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => changed = true));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
+
+        cut.WaitForAssertion(() => Assert.True(changed)); // reloaded: the version is locked
+        Assert.Contains("Locked, but the status was not updated", cut.Markup);
+        Assert.Contains("Finalization succeeded", cut.Markup);
+        Assert.Contains("Use Change status", cut.Markup);
+        Assert.Single(Api.Requests, r => r.Path.EndsWith("/lock"));
     }
 
     [Fact]
