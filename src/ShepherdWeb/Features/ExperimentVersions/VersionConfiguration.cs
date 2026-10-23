@@ -16,7 +16,7 @@ public sealed record VersionConfiguration(
     /// <summary>
     /// Configuration is immutable once the first execution exists, and everything is immutable once
     /// the version is locked (docs/ARCHITECTURE.md §3, rules 3–4). The UI offers no configuration
-    /// edits when this is true. ShepherdAPI enforces only the lock part today (A1).
+    /// edits when this is true. ShepherdAPI enforces both (design-frozen, version-locked).
     /// </summary>
     public bool IsConfigurationFrozen => VersionLifecycle.IsLocked(Version) || ExecutionCount > 0;
 
@@ -30,7 +30,7 @@ public sealed record VersionConfiguration(
 /// Loads a <see cref="VersionConfiguration"/> for the pages that show or edit it. The version,
 /// iterations, parameters and score rules load concurrently; executions are then listed per iteration
 /// (one call each, acceptable at MVP volume; A4 would make it one call).
-/// ScoreRules contains non-retired rules only; that is what ShepherdAPI's list returns.
+/// ScoreRules contains every rule of the version (ShepherdAPI deletes rules physically, Issue #7).
 /// </summary>
 public sealed class VersionConfigurationLoader(
     IExperimentVersionsClient versions,

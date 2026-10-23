@@ -139,7 +139,7 @@ public class ConfigurationComponentTests : AppTestContext
     }
 
     [Fact]
-    public async Task ScoreRuleTable_LockedVersion_OffersNoRetireOrAdd()
+    public async Task ScoreRuleTable_LockedVersion_OffersNoDeleteOrAdd()
     {
         await LoadedReferenceDataAsync();
         ServeVersion(locked: true, statusId: Json.Locked, scoreRules: Json.OneScoreRule);
@@ -148,8 +148,44 @@ public class ConfigurationComponentTests : AppTestContext
         var cut = Render<ScoreRuleTable>(p => p.Add(x => x.Configuration, config));
 
         Assert.Contains("Correctness", cut.Markup);
-        Assert.DoesNotContain("Retire", cut.Markup);
+        Assert.DoesNotContain("Delete", cut.Markup);
         Assert.Empty(cut.FindAll("form"));
+    }
+
+    [Fact]
+    public async Task ScoreRuleTable_VersionWithExecutions_OffersNoDeleteOrAdd()
+    {
+        // The first execution freezes the design (ShepherdAPI design-frozen).
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration,
+            executionsPerIteration: Json.OneExecutionInProgress, scoreRules: Json.OneScoreRule);
+        var config = await LoadConfigurationAsync();
+
+        var cut = Render<ScoreRuleTable>(p => p.Add(x => x.Configuration, config));
+
+        Assert.Contains("Correctness", cut.Markup);
+        Assert.DoesNotContain("Delete", cut.Markup);
+        Assert.Empty(cut.FindAll("form"));
+    }
+
+    [Fact]
+    public async Task ScoreRuleTable_Delete_ExplainsThePairIsFreed_AndDeletesTheRule()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, scoreRules: Json.OneScoreRule);
+        Api.On(HttpMethod.Delete, "/api/score-rules/5", HttpStatusCode.NoContent);
+        var config = await LoadConfigurationAsync();
+        var changed = false;
+
+        var cut = Render<ScoreRuleTable>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => changed = true));
+        cut.FindAll("button").Single(b => b.TextContent.Trim() == "Delete").Click();
+
+        Assert.Contains("become free", cut.Markup);
+        Assert.DoesNotContain("retire", cut.Markup, StringComparison.OrdinalIgnoreCase);
+        cut.FindAll("button").Last(b => b.TextContent.Trim() == "Delete").Click();
+
+        cut.WaitForAssertion(() => Assert.True(changed));
+        Assert.Single(Api.Requests, r => r.Method == HttpMethod.Delete);
     }
 
     [Fact]

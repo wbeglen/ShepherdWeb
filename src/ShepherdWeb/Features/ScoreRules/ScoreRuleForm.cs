@@ -39,7 +39,7 @@ public sealed class ScoreRuleForm : IValidatableObject
 
         if (ExistingPairs.Contains((PhaseID, ScoreCategoryID)))
         {
-            // Unique (version, phase, category), including retired rules (finding F2).
+            // Unique (version, phase, category); a deleted rule frees its pair (ShepherdAPI Issue #7).
             yield return new ValidationResult("This phase already has a rule for this category.", [nameof(ScoreCategoryID)]);
         }
 
