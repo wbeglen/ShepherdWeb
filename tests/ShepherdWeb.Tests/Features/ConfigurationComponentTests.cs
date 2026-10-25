@@ -25,6 +25,37 @@ public class ConfigurationComponentTests : AppTestContext
     }
 
     [Fact]
+    public async Task VersionOverview_LockedVersion_ListsItsFinalizationExceptions_AndCountsTheUnknownEnd()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: true, statusId: Json.Locked, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress,
+            finalizationExceptions: Json.UnknownEnd(12, "Cursor could not report the end time.\nNo log was kept."));
+        var config = await LoadConfigurationAsync();
+
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config));
+
+        Assert.Contains("Finalization exceptions", cut.Markup);
+        Assert.Contains("Cursor could not report the end time.", cut.Markup);
+        Assert.Contains("#12", cut.Markup);
+        Assert.Contains("1 (1 end time unknown — acknowledged)", cut.Markup);
+        Assert.DoesNotContain("in progress", cut.Markup);
+    }
+
+    [Fact]
+    public async Task VersionOverview_UnlockedVersion_SaysEndTimeNotRecorded_NotInProgress()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);
+        var config = await LoadConfigurationAsync();
+
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config));
+
+        Assert.Contains("1 (1 end time not recorded)", cut.Markup);
+        Assert.DoesNotContain("in progress", cut.Markup);
+        Assert.DoesNotContain("Finalization exceptions", cut.Markup);
+    }
+
+    [Fact]
     public async Task Loader_ForAnUnlockedVersion_MakesNoFinalizationExceptionCall()
     {
         ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);

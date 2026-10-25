@@ -26,6 +26,15 @@ public static class ExecutionRules
         : configuration.ExceptionFor(execution) is not null ? ExecutionEndState.UnknownAcknowledged
         : ExecutionEndState.MissingAcknowledgment;
 
+    /// <summary>How a missing end time is shown, by state; null when the execution has ended (its EndUTC is shown).</summary>
+    public static string? EndLabel(ExecutionEndState state) => state switch
+    {
+        ExecutionEndState.NotRecorded => "End time not recorded",
+        ExecutionEndState.UnknownAcknowledged => "End time unknown — acknowledged",
+        ExecutionEndState.MissingAcknowledgment => "No end time — not acknowledged",
+        _ => null,
+    };
+
     /// <summary>
     /// True when the prompt delivered at the start of an execution is not the iteration's own prompt
     /// (AD-8, revision: execution-specific prompt). Exact, ordinal comparison, because the delivered

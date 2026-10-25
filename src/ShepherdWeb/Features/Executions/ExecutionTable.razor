@@ -30,7 +30,7 @@
                 <td>@ReferenceData.PhaseName(e.PhaseID)</td>
                 <td class="text-end">@e.AttemptNumber</td>
                 <td><UtcTimestamp Value="e.StartUTC" /></td>
-                <td><UtcTimestamp Value="e.EndUTC" Missing="in progress" /></td>
+                <td><UtcTimestamp Value="e.EndUTC" Missing="@(ExecutionRules.EndLabel(ExecutionRules.EndStateOf(e, Configuration)) ?? "")" /></td>
                 <td class="text-nowrap">
                     @if (e.InterventionCount > 0)
                     {

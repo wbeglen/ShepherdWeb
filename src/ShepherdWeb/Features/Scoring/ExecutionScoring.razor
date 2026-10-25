@@ -19,17 +19,18 @@
         @ReferenceData.PhaseName(e.PhaseID) · attempt @e.AttemptNumber
     </p>
 
-    @if (!v.HasEnded)
+    @* Existing scores are always listed below. Entering or correcting one requires an ended execution on an unlocked
+       version (scoring after the end, A5; the lock). *@
+    @if (VersionLifecycle.IsLocked(v.Version))
     {
-        <p class="text-secondary">Scoring is available after the execution ends (it is still in progress).</p>
+        <div class="alert alert-secondary py-2">This version is locked. Scores and evidence are final.</div>
+    }
+    else if (!v.HasEnded)
+    {
+        <p class="text-secondary">Scores can be entered once the execution's end time is recorded. Existing scores are listed below.</p>
     }
     else
     {
-        @if (!v.CanEvaluate)
-        {
-            <div class="alert alert-secondary py-2">This version is locked. Scores and evidence are final.</div>
-        }
-        else
         {
             <div class="form-narrow mb-3">
                 <label class="form-label" for="rater">Rater</label>
@@ -94,30 +95,30 @@
                 </table>
             }
         }
+    }
 
-        <h3 class="h6 mt-4">All scores for this execution</h3>
-        @if (allObservations.Count == 0)
-        {
-            <p class="text-secondary">None yet.</p>
-        }
-        else
-        {
-            <table class="table table-sm">
-                <thead><tr><th>Category</th><th>Rater</th><th class="text-end">Score</th><th>Observed</th><th>Notes</th></tr></thead>
-                <tbody>
-                    @foreach (var o in allObservations)
-                    {
-                        <tr>
-                            <td>@RuleLabel(o.ScoreRuleID)</td>
-                            <td>@ReferenceData.RaterName(o.RaterID)</td>
-                            <td class="text-end">@o.ObservedScore.ToString("0.##")</td>
-                            <td><UtcTimestamp Value="o.ObservedUTC" /></td>
-                            <td class="small text-prewrap">@o.ObservationNotes</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        }
+    <h3 class="h6 mt-4">All scores for this execution</h3>
+    @if (allObservations.Count == 0)
+    {
+        <p class="text-secondary">None yet.</p>
+    }
+    else
+    {
+        <table class="table table-sm">
+            <thead><tr><th>Category</th><th>Rater</th><th class="text-end">Score</th><th>Observed</th><th>Notes</th></tr></thead>
+            <tbody>
+                @foreach (var o in allObservations)
+                {
+                    <tr>
+                        <td>@RuleLabel(o.ScoreRuleID)</td>
+                        <td>@ReferenceData.RaterName(o.RaterID)</td>
+                        <td class="text-end">@o.ObservedScore.ToString("0.##")</td>
+                        <td><UtcTimestamp Value="o.ObservedUTC" /></td>
+                        <td class="small text-prewrap">@o.ObservationNotes</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
     }
 }
 else if (problem is null)

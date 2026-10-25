@@ -11,7 +11,7 @@
     <dt class="col-sm-3">Locked</dt>
     <dd class="col-sm-9"><UtcTimestamp Value="Version.LockedUTC" Missing="not locked" /></dd>
     <dt class="col-sm-3">Executions</dt>
-    <dd class="col-sm-9">@Configuration.ExecutionCount (@InProgressCount in progress)</dd>
+    <dd class="col-sm-9">@Configuration.ExecutionCount@ExecutionEndSummary</dd>
     <dt class="col-sm-3">Description</dt>
     <dd class="col-sm-9 text-prewrap">@Version.Description</dd>
 </dl>
@@ -31,8 +31,31 @@
 {
     @* ShepherdAPI refuses to finalize while any execution is open (finalize-execution-not-ended). *@
     <p class="text-secondary small">
-        @InProgressCount execution@(InProgressCount == 1 ? " is" : "s are") still in progress. End @(InProgressCount == 1 ? "it" : "them") before locking.
+        @InProgressCount execution@(InProgressCount == 1 ? " has" : "s have") no recorded end time. End @(InProgressCount == 1 ? "it" : "them") before locking.
     </p>
+}
+
+@* The exceptions accepted when this version was finalized (ShepherdAPI V11): permanent, read-only. *@
+@if (Configuration.Exceptions.Count > 0)
+{
+    <section class="mb-4" aria-label="Finalization exceptions">
+        <h2 class="h6">Finalization exceptions</h2>
+        <p class="small text-secondary">Accepted when this version was finalized. These records are permanent.</p>
+        <table class="table table-sm align-top">
+            <thead><tr><th style="width: 7rem">Execution</th><th style="width: 14rem">Exception</th><th>Explanation</th><th style="width: 12rem">Accepted</th></tr></thead>
+            <tbody>
+                @foreach (var x in Configuration.Exceptions)
+                {
+                    <tr>
+                        <td><a href="executions/@x.ExecutionID">#@x.ExecutionID</a></td>
+                        <td>@(x.ExceptionCode == "end-time-unknown" ? "End time unknown — acknowledged" : x.ExceptionCode)</td>
+                        <td class="text-prewrap">@x.Explanation</td>
+                        <td><UtcTimestamp Value="x.RecordedUTC" /></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
 }
 
 <section class="form-narrow">
@@ -92,6 +115,21 @@
 
     private ShepherdApi.ExperimentVersion Version => Configuration.Version;
     private int InProgressCount => Configuration.Executions.Count(e => e.EndUTC is null);
+
+    // e.g. " (1 end time not recorded)" before the lock, " (1 end time unknown — acknowledged)" after it.
+    private string ExecutionEndSummary
+    {
+        get
+        {
+            var parts = Configuration.Executions
+                .Select(e => ExecutionRules.EndStateOf(e, Configuration))
+                .Where(s => s != ExecutionEndState.Ended)
+                .GroupBy(s => s).OrderBy(g => g.Key)
+                .Select(g => $"{g.Count()} {ExecutionRules.EndLabel(g.Key)!.ToLowerInvariant()}")
+                .ToList();
+            return parts.Count == 0 ? "" : $" ({string.Join(", ", parts)})";
+        }
+    }
     private IReadOnlyList<ShepherdApi.Status> offerable = [];
     private ShepherdApi.Status? lockStatus;
     private int selectedStatusId;

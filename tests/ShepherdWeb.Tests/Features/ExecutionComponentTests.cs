@@ -14,10 +14,11 @@ namespace ShepherdWeb.Tests.Features;
 public class ExecutionComponentTests : AppTestContext
 {
     /// <summary>Serves execution 11 of iteration 7 of version 1, with its artifacts and observations.</summary>
-    private void ServeExecution(bool ended, bool locked, string artifacts = "[]", string observations = "[]", string scoreRules = "[]")
+    private void ServeExecution(bool ended, bool locked, string artifacts = "[]", string observations = "[]", string scoreRules = "[]",
+        string finalizationExceptions = "[]")
     {
         ServeVersion(locked, locked ? Json.Locked : Json.Draft, iterations: Json.OneIteration, scoreRules: scoreRules,
-            executionsPerIteration: $"[{Json.Execution(ended)}]");
+            executionsPerIteration: $"[{Json.Execution(ended)}]", finalizationExceptions: finalizationExceptions);
         Api.On(HttpMethod.Get, "/api/executions/11", HttpStatusCode.OK, Json.Execution(ended))
             .On(HttpMethod.Get, "/api/iterations/7", HttpStatusCode.OK, Json.OneIterationSingle)
             .On(HttpMethod.Get, "/api/artifacts", HttpStatusCode.OK, artifacts)
@@ -121,15 +122,93 @@ public class ExecutionComponentTests : AppTestContext
         Assert.Contains("\"modelUsed\":\"model-x\"", body); // full set re-sent
     }
 
+    private const string OneObservation =
+        """[{"scoreObservationID":9,"executionID":11,"scoreRuleID":5,"raterID":1,"observedScore":4.5,"observedUTC":"2026-09-03T08:00:00","observationNotes":"solid design"}]""";
+
+    private const string Why = "Cursor could not report the end time of this run.";
+
     [Fact]
-    public void Scoring_BeforeTheExecutionEnds_IsNotOffered()
+    public void Scoring_BeforeTheEndIsRecorded_OffersNoEntry_ButListsExistingScores()
     {
-        ServeExecution(ended: false, locked: false, scoreRules: Json.OneScoreRule);
+        // A5 stays: no entry before the end. Existing scores stay viewable (revision 4.4).
+        ServeExecution(ended: false, locked: false, scoreRules: Json.OneScoreRule, observations: OneObservation);
 
         var cut = Render<ExecutionScoring>(p => p.Add(x => x.ExecutionId, 11));
 
-        cut.WaitForAssertion(() => Assert.Contains("available after the execution ends", cut.Markup));
+        cut.WaitForAssertion(() => Assert.Contains("once the execution's end time is recorded", cut.Markup));
         Assert.Empty(cut.FindAll("input"));
+        Assert.Empty(cut.FindAll("select"));
+        Assert.Contains("solid design", cut.Markup);
+        Assert.Contains("4.5", cut.Markup);
+    }
+
+    [Fact]
+    public void Scoring_AnAcknowledgedUnknownEndOnALockedVersion_ListsItsScores_ReadOnly()
+    {
+        ServeExecution(ended: false, locked: true, scoreRules: Json.OneScoreRule, observations: OneObservation,
+            finalizationExceptions: Json.UnknownEnd(11, Why));
+
+        var cut = Render<ExecutionScoring>(p => p.Add(x => x.ExecutionId, 11));
+
+        cut.WaitForAssertion(() => Assert.Contains("Scores and evidence are final", cut.Markup));
+        Assert.Contains("solid design", cut.Markup);
+        Assert.Empty(cut.FindAll("input"));
+    }
+
+    [Fact]
+    public void EndNotRecorded_IsNotCalledInProgress_AndKeepsScoresViewable()
+    {
+        ServeExecution(ended: false, locked: false);
+
+        var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
+
+        cut.WaitForAssertion(() => Assert.Contains("end time not recorded", cut.Markup));
+        Assert.DoesNotContain("in progress", cut.Markup);
+        Assert.Contains("If the agent is still running", cut.Markup);
+        Assert.Contains("View scores", cut.Markup); // no entry before the end (A5), but viewing is allowed
+        Assert.Contains("once the end time is recorded", cut.Markup);
+    }
+
+    [Fact]
+    public void AcknowledgedUnknownEnd_OnALockedVersion_ShowsTheImmutableExplanation_AndReadOnlyEvaluation()
+    {
+        ServeExecution(ended: false, locked: true, finalizationExceptions: Json.UnknownEnd(11, Why));
+
+        var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
+
+        cut.WaitForAssertion(() => Assert.Contains("End time unknown — acknowledged", cut.Markup));
+        Assert.Contains(Why, cut.Markup);
+        Assert.Contains("This record is permanent", cut.Markup);
+        Assert.Contains("View scores", cut.Markup);
+        Assert.DoesNotContain("Execution ended", cut.Markup);
+        Assert.DoesNotContain("Integrity warning", cut.Markup);
+        Assert.DoesNotContain("in progress", cut.Markup);
+    }
+
+    [Fact]
+    public void ALockedExecutionWithNoEndAndNoException_IsAnIntegrityWarning()
+    {
+        ServeExecution(ended: false, locked: true);
+
+        var cut = Render<ExecutionDetail>(p => p.Add(x => x.ExecutionId, 11));
+
+        cut.WaitForAssertion(() => Assert.Contains("Integrity warning", cut.Markup));
+        Assert.Contains("no end time — not acknowledged", cut.Markup);
+        Assert.DoesNotContain("End time unknown — acknowledged", cut.Markup);
+    }
+
+    [Fact]
+    public async Task ExecutionList_GroupsExecutionsWithoutAnEnd_ByWhatThatMeans()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: true, statusId: Json.Locked, iterations: Json.OneIteration,
+            executionsPerIteration: Json.OneExecutionInProgress, finalizationExceptions: Json.UnknownEnd(12, Why));
+        var config = await LoadConfigurationAsync();
+
+        var cut = Render<ExecutionList>(p => p.Add(x => x.Configuration, config));
+
+        Assert.Contains("End time unknown — acknowledged", cut.Markup);
+        Assert.DoesNotContain("In progress", cut.Markup);
     }
 
     [Fact]

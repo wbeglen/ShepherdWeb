@@ -1,5 +1,5 @@
-@* The Executions tab of a version: executions still in progress first (so one left running is easy
-   to find), then all executions grouped by iteration. *@
+@* The Executions tab of a version: executions without an end time first (so one left running, or whose end was
+   never recorded, is easy to find), then all executions grouped by iteration. *@
 @inject ReferenceData ReferenceData
 @inject IOptions<ConventionsOptions> Conventions
 
@@ -18,11 +18,12 @@ else
 }
 else
 {
-    var inProgress = Configuration.Executions.Where(e => !ExecutionRules.HasEnded(e)).ToList();
-    @if (inProgress.Count > 0)
+    @* Executions without an end time first, grouped by what that means (ExecutionRules.EndStateOf). *@
+    @foreach (var group in Configuration.Executions.Where(e => !ExecutionRules.HasEnded(e))
+                  .GroupBy(e => ExecutionRules.EndStateOf(e, Configuration)).OrderBy(g => g.Key))
     {
-        <h2 class="h6">In progress</h2>
-        <ExecutionTable Executions="inProgress" Configuration="Configuration" ShowIteration="true" />
+        <h2 class="h6 @(group.Key == ExecutionEndState.MissingAcknowledgment ? "text-danger" : null)">@ExecutionRules.EndLabel(group.Key)</h2>
+        <ExecutionTable Executions="group.ToList()" Configuration="Configuration" ShowIteration="true" />
     }
 
     @foreach (var iteration in Configuration.Iterations)
