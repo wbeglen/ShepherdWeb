@@ -244,17 +244,68 @@ public class ConfigurationComponentTests : AppTestContext
     }
 
     [Fact]
-    public async Task VersionOverview_Lock_IsDisabledWhileAnExecutionIsInProgress()
+    public async Task VersionOverview_Lock_WithAnExecutionWithoutAnEnd_RequiresItsAcknowledgmentAndExplanation()
     {
-        // ShepherdAPI refuses to finalize with an open execution (finalize-execution-not-ended).
+        // W2: Lock stays available; each execution without an end must be acknowledged, with an explanation.
         await LoadedReferenceDataAsync();
         ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Draft))
+            .On(HttpMethod.Put, "/api/experiment-versions/1/status", HttpStatusCode.OK, Json.Version(true, Json.Locked));
         var config = await LoadConfigurationAsync();
+        var changed = false;
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => changed = true));
+        var lockButton = cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version"));
+        Assert.False(lockButton.HasAttribute("disabled"));
+        Assert.Contains("acknowledge its end time as unknown when locking", cut.Markup);
 
+        lockButton.Click();
+        bool ConfirmEnabled() => !cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).HasAttribute("disabled");
+
+        Assert.Contains("Executions without a recorded end time", cut.Markup);
+        Assert.Contains("never be recorded afterwards", cut.Markup);
+        Assert.False(ConfirmEnabled());
+        Assert.Contains("Acknowledge that this execution's end time is unknown", cut.Markup);
+
+        cut.Find("#ack-12").Change(true);
+        Assert.False(ConfirmEnabled()); // still no explanation
+        cut.Find("#why-12").Input("   ");
+        Assert.False(ConfirmEnabled()); // a blank explanation does not count
+        Assert.Contains("Explain why the end time is unknown", cut.Markup);
+
+        const string explanation = "  Cursor could not report the end time.\nNo run log was kept.  ";
+        cut.Find("#why-12").Input(explanation);
+        Assert.True(ConfirmEnabled());
+        Assert.Contains($"{explanation.Length} / 2000", cut.Markup);
+
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
+
+        cut.WaitForAssertion(() => Assert.True(changed));
+        var body = System.Text.Json.JsonDocument.Parse(Api.Requests.Single(r => r.Path.EndsWith("/lock")).Body!).RootElement;
+        var unknownEnd = Assert.Single(body.GetProperty("unknownEnds").EnumerateArray());
+        Assert.Equal(12, unknownEnd.GetProperty("executionID").GetInt64());
+        Assert.Equal(explanation, unknownEnd.GetProperty("explanation").GetString()); // exactly as entered
+        Assert.Single(Api.Requests, r => r.Path.EndsWith("/status")); // D1 still applies
+    }
+
+    [Fact]
+    public async Task VersionOverview_Lock_WithTwoExecutionsWithoutAnEnd_RequiresBothAcknowledgments()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration,
+            executionsPerIteration: """[{"executionID":12,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T09:00:00","endUTC":null,"interventionCount":0,"attemptNumber":1},{"executionID":13,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T11:00:00","endUTC":null,"interventionCount":0,"attemptNumber":2}]""");
+        var config = await LoadConfigurationAsync();
         var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
+        bool ConfirmEnabled() => !cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).HasAttribute("disabled");
 
-        Assert.True(cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).HasAttribute("disabled"));
-        Assert.Contains("End it before locking", cut.Markup);
+        cut.Find("#ack-12").Change(true);
+        cut.Find("#why-12").Input("unknown");
+        Assert.False(ConfirmEnabled());
+
+        cut.Find("#ack-13").Change(true);
+        cut.Find("#why-13").Input("also unknown");
+        Assert.True(ConfirmEnabled());
+        Assert.DoesNotContain(Api.Requests, r => r.Method == HttpMethod.Post); // nothing sent before confirming
     }
 
     [Fact]
@@ -279,6 +330,7 @@ public class ConfigurationComponentTests : AppTestContext
         var writes = Api.Requests.Where(r => r.Method != HttpMethod.Get).ToList();
         Assert.Equal(["/api/experiment-versions/1/lock", "/api/experiment-versions/1/status"], writes.Select(r => r.Path));
         Assert.DoesNotContain("\"statusID\":2", writes[0].Body); // the lock carries no status
+        Assert.DoesNotContain("executionID", writes[0].Body);    // and, with every execution ended, no unknown ends
         Assert.Contains("\"statusID\":2", writes[1].Body);
         Assert.DoesNotContain("not updated", cut.Markup);
     }

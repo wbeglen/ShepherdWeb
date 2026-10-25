@@ -135,6 +135,63 @@ public class ScoreRuleFormTests
     }
 }
 
+public class LockRequestFormTests
+{
+    private static VersionConfiguration Config(params Execution[] executions) =>
+        new(new ExperimentVersion(), [], [], [], executions);
+
+    [Fact]
+    public void WithEveryExecutionEnded_ItCanSubmit_AndSendsNoUnknownEnds()
+    {
+        var form = LockRequestForm.For(Config(new Execution { ExecutionID = 1, EndUTC = DateTime.UtcNow }));
+
+        Assert.Empty(form.UnknownEnds);
+        Assert.True(form.CanSubmit);
+        Assert.Null(form.ToRequest().UnknownEnds);
+        Assert.Null(form.ToRequest().StatusID);
+    }
+
+    [Fact]
+    public void EachExecutionWithoutAnEnd_NeedsAnAcknowledgmentAndAnAcceptableExplanation()
+    {
+        var form = LockRequestForm.For(Config(
+            new Execution { ExecutionID = 9, StartUTC = new DateTime(2026, 9, 1, 1, 55, 0, DateTimeKind.Utc) },
+            new Execution { ExecutionID = 4, EndUTC = DateTime.UtcNow }));
+        var nine = Assert.Single(form.UnknownEnds);
+        Assert.Equal(9, nine.Execution.ExecutionID);
+
+        Assert.False(form.CanSubmit);
+        nine.Explanation = "Cursor could not report it.";
+        Assert.False(form.CanSubmit); // explained but not acknowledged
+        nine.Acknowledged = true;
+        nine.Explanation = " \n ";
+        Assert.False(form.CanSubmit); // blank
+        nine.Explanation = new string('x', LockRequestForm.ExplanationMaxLength + 1);
+        Assert.False(form.CanSubmit); // too long
+        Assert.Contains("2000", nine.Problem);
+        nine.Explanation = new string('x', LockRequestForm.ExplanationMaxLength);
+        Assert.True(form.CanSubmit);
+    }
+
+    [Fact]
+    public void TheRequest_CarriesEachAcknowledgment_ExactlyAsEntered_OldestFirst()
+    {
+        var form = LockRequestForm.For(Config(
+            new Execution { ExecutionID = 13, StartUTC = new DateTime(2026, 9, 2, 0, 0, 0, DateTimeKind.Utc) },
+            new Execution { ExecutionID = 9, StartUTC = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc) }));
+        foreach (var u in form.UnknownEnds)
+        {
+            u.Acknowledged = true;
+            u.Explanation = $"  why {u.Execution.ExecutionID}  ";
+        }
+
+        var ends = form.ToRequest().UnknownEnds!;
+
+        Assert.Equal([9L, 13L], ends.Select(e => e.ExecutionID));
+        Assert.Equal(["  why 9  ", "  why 13  "], ends.Select(e => e.Explanation));
+    }
+}
+
 public class GeneratedClientCustomizationTests
 {
     [Fact]

@@ -24,14 +24,15 @@
     <a class="btn btn-outline-primary" href="versions/@Version.ExperimentVersionID/review">Review configuration</a>
     @if (!VersionLifecycle.IsLocked(Version))
     {
-        <button class="btn btn-danger ms-auto" disabled="@(InProgressCount > 0)" @onclick="() => confirmingLock = true">Lock version…</button>
+        <button class="btn btn-danger ms-auto" @onclick="OpenLock">Lock version…</button>
     }
 </div>
-@if (!VersionLifecycle.IsLocked(Version) && InProgressCount > 0)
+@if (!VersionLifecycle.IsLocked(Version) && NoEndCount > 0)
 {
-    @* ShepherdAPI refuses to finalize while any execution is open (finalize-execution-not-ended). *@
+    @* ShepherdAPI V11 finalizes an execution without EndUTC only when its unknown end is acknowledged (owner decision W2). *@
     <p class="text-secondary small">
-        @InProgressCount execution@(InProgressCount == 1 ? " has" : "s have") no recorded end time. End @(InProgressCount == 1 ? "it" : "them") before locking.
+        @NoEndCount execution@(NoEndCount == 1 ? " has" : "s have") no recorded end time. End @(NoEndCount == 1 ? "it" : "them") first, or
+        acknowledge @(NoEndCount == 1 ? "its end time" : "each end time") as unknown when locking; it can then never be recorded.
     </p>
 }
 
@@ -86,13 +87,53 @@
 @* Lock is the final immutability boundary (docs/ARCHITECTURE.md §3 rule 4, revision 4). ShepherdAPI's lock
    runs finalization: it checks the version is complete, snapshots every score and sets LockedUTC, or
    changes nothing and says why (finalize-*). It no longer sets the status, so ShepherdWeb sets
-   "Locked" in a second call (owner decision D1); LockedUTC stays authoritative. *@
+   "Locked" in a second call (owner decision D1); LockedUTC stays authoritative. Since ShepherdAPI V11 an
+   execution without an end time is accepted only when acknowledged here, one by one, with an explanation
+   (owner decision W2); each becomes a permanent FinalizationException committed with the lock. *@
 <ConfirmDialog Visible="confirmingLock" Title="Lock this version?" ConfirmText="Lock permanently" ConfirmClass="btn-danger"
-               Busy="saving" OnConfirm="LockAsync" OnCancel="() => confirmingLock = false">
+               DialogClass="@(lockForm?.UnknownEnds.Count > 0 ? "modal-lg" : null)"
+               Busy="saving" ConfirmEnabled="@(lockForm?.CanSubmit ?? false)" OnConfirm="LockAsync" OnCancel="() => confirmingLock = false">
     <p><strong>@Version.Name @Version.VersionLabel</strong></p>
+    @if (lockForm is { UnknownEnds.Count: > 0 })
+    {
+        <section class="border border-warning rounded p-3 mb-3" aria-label="Executions without a recorded end time">
+            <h3 class="h6">Executions without a recorded end time</h3>
+            <p class="small">
+                Each must be acknowledged before locking. An acknowledged execution's end time can <strong>never be recorded afterwards</strong>,
+                and the explanation becomes a <strong>permanent</strong> part of the record. If an execution's end time is known, cancel and
+                record it on the execution's page instead.
+            </p>
+            @foreach (var u in lockForm.UnknownEnds)
+            {
+                var e = u.Execution;
+                <div class="border-top pt-2 mt-2">
+                    <div class="small">
+                        <a href="executions/@e.ExecutionID" target="_blank" rel="noopener">Execution #@e.ExecutionID</a> ·
+                        @(Configuration.IterationOf(e)?.IterationLabel) · @ReferenceData.AgentName(e.AgentID) · @ReferenceData.PhaseName(e.PhaseID) ·
+                        started <UtcTimestamp Value="e.StartUTC" />
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(e.OutcomeNotes))
+                    {
+                        <div class="small text-secondary text-prewrap">Outcome notes: @e.OutcomeNotes</div>
+                    }
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox" id="ack-@e.ExecutionID" @bind="u.Acknowledged" disabled="@saving" />
+                        <label class="form-check-label" for="ack-@e.ExecutionID">End time is unknown; finalize without it</label>
+                    </div>
+                    <label class="form-label small mt-1" for="why-@e.ExecutionID">Explanation (required, permanent)</label>
+                    <textarea class="form-control form-control-sm" id="why-@e.ExecutionID" rows="3" maxlength="@LockRequestForm.ExplanationMaxLength"
+                              @bind="u.Explanation" @bind:event="oninput" disabled="@saving"></textarea>
+                    <div class="d-flex justify-content-between small">
+                        <span class="text-danger">@u.Problem</span>
+                        <span class="text-secondary">@u.Explanation.Length / @LockRequestForm.ExplanationMaxLength</span>
+                    </div>
+                </div>
+            }
+        </section>
+    }
     <ul>
         <li>@Configuration.Iterations.Count iterations, @Configuration.ExecutionCount executions</li>
-        <li>ShepherdAPI first checks that the version is complete (every execution ended and scored, rule weights total 100 per phase). If not, nothing changes and it says why.</li>
+        <li>ShepherdAPI first checks that the version is complete (every execution ended or acknowledged above, every execution scored, rule weights total 100 per phase). If not, nothing changes and it says why.</li>
         <li>Every score is copied into a permanent snapshot.</li>
         @if (lockStatus is not null)
         {
@@ -114,7 +155,16 @@
     [Parameter] public EventCallback OnChanged { get; set; }
 
     private ShepherdApi.ExperimentVersion Version => Configuration.Version;
-    private int InProgressCount => Configuration.Executions.Count(e => e.EndUTC is null);
+    private int NoEndCount => Configuration.Executions.Count(e => e.EndUTC is null);
+    private LockRequestForm? lockForm;
+
+    // A fresh form each time: the dialog always reflects the configuration as last loaded.
+    private void OpenLock()
+    {
+        problem = null;
+        lockForm = LockRequestForm.For(Configuration);
+        confirmingLock = true;
+    }
 
     // e.g. " (1 end time not recorded)" before the lock, " (1 end time unknown — acknowledged)" after it.
     private string ExecutionEndSummary
@@ -181,8 +231,8 @@
             ShepherdApi.ExperimentVersion locked;
             try
             {
-                // ShepherdAPI ignores StatusID on lock; none is sent.
-                locked = await Versions.LockAsync(Version.ExperimentVersionID, new ShepherdApi.LockExperimentVersionRequest());
+                // No StatusID (ShepherdAPI ignores it); the acknowledged unknown ends, explanations exactly as entered.
+                locked = await Versions.LockAsync(Version.ExperimentVersionID, lockForm!.ToRequest());
             }
             catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
             {
