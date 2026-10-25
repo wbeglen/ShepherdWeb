@@ -4,6 +4,10 @@
 @inject IOptions<ConventionsOptions> Conventions
 
 <ProblemDisplay Problem="problem" />
+@if (lockNotice is not null)
+{
+    <div class="alert alert-info" role="status">@lockNotice</div>
+}
 
 <dl class="row mb-4">
     <dt class="col-sm-3">Effective</dt>
@@ -92,8 +96,10 @@
    (owner decision W2); each becomes a permanent FinalizationException committed with the lock. *@
 <ConfirmDialog Visible="confirmingLock" Title="Lock this version?" ConfirmText="Lock permanently" ConfirmClass="btn-danger"
                DialogClass="@(lockForm?.UnknownEnds.Count > 0 ? "modal-lg" : null)"
-               Busy="saving" ConfirmEnabled="@(lockForm?.CanSubmit ?? false)" OnConfirm="LockAsync" OnCancel="() => confirmingLock = false">
+               Busy="saving" ConfirmEnabled="@(lockForm?.CanSubmit ?? false)" OnConfirm="LockAsync" OnCancel="CancelLock">
     <p><strong>@Version.Name @Version.VersionLabel</strong></p>
+    @* Problems the operator can fix here (a malformed request, a retryable conflict) keep the dialog and its input. *@
+    <ProblemDisplay Problem="lockProblem" />
     @if (lockForm is { UnknownEnds.Count: > 0 })
     {
         <section class="border border-warning rounded p-3 mb-3" aria-label="Executions without a recorded end time">
@@ -158,13 +164,27 @@
     private int NoEndCount => Configuration.Executions.Count(e => e.EndUTC is null);
     private LockRequestForm? lockForm;
 
+    private ApiProblem? lockProblem;
+    private string? lockNotice;
+
     // A fresh form each time: the dialog always reflects the configuration as last loaded.
     private void OpenLock()
     {
         problem = null;
+        lockProblem = null;
+        lockNotice = null;
         lockForm = LockRequestForm.For(Configuration);
         confirmingLock = true;
     }
+
+    private void CancelLock()
+    {
+        lockProblem = null;
+        confirmingLock = false;
+    }
+
+    // Refusals that mean the page is out of date: another session changed or locked the version.
+    private static readonly HashSet<string> StaleCodes = ["finalize-unknown-end-invalid", "finalize-execution-not-ended", "version-locked"];
 
     // e.g. " (1 end time not recorded)" before the lock, " (1 end time unknown — acknowledged)" after it.
     private string ExecutionEndSummary
@@ -222,13 +242,22 @@
         }
     }
 
+    /// <summary>
+    /// Finalizes the version (revision 4.4). The page shows the version as locked only once ShepherdAPI has confirmed it:
+    /// a 200 from Lock, or, when the response was lost, a fresh read showing LockedUTC. Lock is never retried
+    /// automatically. Refusals keep the dialog only when the operator can act on them there (W3, M5).
+    /// </summary>
     private async Task LockAsync()
     {
         saving = true;
         problem = null;
+        lockProblem = null;
+        lockNotice = null;
+        var closeDialog = true;
+        var reload = false;
         try
         {
-            ShepherdApi.ExperimentVersion locked;
+            ShepherdApi.ExperimentVersion? locked = null;
             try
             {
                 // No StatusID (ShepherdAPI ignores it); the acknowledged unknown ends, explanations exactly as entered.
@@ -236,8 +265,40 @@
             }
             catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
             {
-                problem = Errors.Map(ex); // e.g. "Finalization Failed: Execution Not Ended", with the IDs in Detail
-                return;
+                var failure = Errors.Map(ex);
+                if (failure.Kind == ApiProblemKind.Validation)
+                {
+                    lockProblem = failure; // a malformed request: correct it in the dialog
+                    closeDialog = false;
+                    return;
+                }
+
+                if (failure.Retryable)
+                {
+                    lockProblem = failure with { Detail = $"{failure.Detail} Nothing was changed. You can try again." };
+                    closeDialog = false;
+                    return;
+                }
+
+                if (failure.Kind is ApiProblemKind.Unreachable or ApiProblemKind.ServerError or ApiProblemKind.Unexpected)
+                {
+                    // The request may have been committed even though no answer arrived: find out instead of guessing.
+                    locked = await ConfirmOutcomeAsync(failure);
+                    if (locked is null)
+                    {
+                        reload = true;
+                        return;
+                    }
+
+                    lockNotice = $"The answer to Lock was lost, but ShepherdAPI confirms the version was locked at {Utc.Format(locked.LockedUTC!.Value)}.";
+                }
+                else
+                {
+                    // e.g. "Finalization Failed: Execution Without Observation", with the IDs in Detail.
+                    problem = failure;
+                    reload = failure.Code is { } code && StaleCodes.Contains(code);
+                    return;
+                }
             }
 
             // Finalization succeeded and is permanent. Synchronize the status; never retry the lock.
@@ -260,12 +321,54 @@
                 }
             }
 
-            await OnChanged.InvokeAsync(); // Reload: the whole page becomes read-only.
+            reload = true; // the whole page becomes read-only
         }
         finally
         {
             saving = false;
-            confirmingLock = false;
+            if (closeDialog)
+            {
+                confirmingLock = false;
+            }
+
+            // Here, not after the try: the refusal paths return early and must still reload.
+            if (reload)
+            {
+                await OnChanged.InvokeAsync();
+            }
         }
+    }
+
+    /// <summary>
+    /// After Lock failed without a definite answer (no response, a timeout, a server error), reads the version to learn
+    /// what actually happened. Returns it when it is locked; otherwise reports the outcome and returns null.
+    /// </summary>
+    private async Task<ShepherdApi.ExperimentVersion?> ConfirmOutcomeAsync(ApiProblem failure)
+    {
+        try
+        {
+            var current = await Versions.ExperimentVersionsGetAsync(Version.ExperimentVersionID);
+            if (VersionLifecycle.IsLocked(current))
+            {
+                return current;
+            }
+
+            problem = failure with
+            {
+                Title = "The version was not locked",
+                Detail = $"Lock did not complete ({failure.Title}: {failure.Detail}). ShepherdAPI confirms the version is still unlocked; nothing was finalized.",
+            };
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = failure with
+            {
+                Title = "Lock outcome unknown",
+                Detail = $"Lock did not answer ({failure.Title}: {failure.Detail}), and the version could not be read to confirm whether it was locked. " +
+                         "Reload the page to see its state before trying again.",
+            };
+        }
+
+        return null;
     }
 }

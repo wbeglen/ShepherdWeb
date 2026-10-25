@@ -287,6 +287,147 @@ public class ConfigurationComponentTests : AppTestContext
         Assert.Single(Api.Requests, r => r.Path.EndsWith("/status")); // D1 still applies
     }
 
+    // ---- Lock refusals and unclear outcomes (M5, W3) ----
+
+    /// <summary>A version whose one execution ended, rendered with the Lock dialog open; counts reloads.</summary>
+    private async Task<(IRenderedComponent<VersionOverview> Cut, Func<int> Reloads)> OpenLockDialogAsync()
+    {
+        await LoadedReferenceDataAsync();
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecution);
+        Api.On(HttpMethod.Put, "/api/experiment-versions/1/status", HttpStatusCode.OK, Json.Version(true, Json.Locked));
+        var config = await LoadConfigurationAsync();
+        var reloads = 0;
+        var cut = Render<VersionOverview>(p => p.Add(x => x.Configuration, config).Add(x => x.OnChanged, () => reloads++));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock version")).Click();
+        return (cut, () => reloads);
+    }
+
+    private static void ConfirmLock(IRenderedComponent<VersionOverview> cut) =>
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Lock permanently")).Click();
+
+    private bool StatusWasSet => Api.Requests.Any(r => r.Path.EndsWith("/status"));
+
+    [Fact]
+    public async Task Lock_ARejectedRequest_400_KeepsTheDialog_AndChangesNothing()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.BadRequest,
+            """{"title":"Validation Failed","status":400,"errors":{"UnknownEnds":["Every unknown end must have an explanation that is not blank."]},"code":"validation-failed"}""");
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Contains("Validation Failed", cut.Markup));
+        Assert.Contains("Lock permanently", cut.Markup); // still open
+        Assert.Equal(0, reloads());
+        Assert.False(StatusWasSet);
+    }
+
+    [Fact]
+    public async Task Lock_AStaleAcknowledgment_ShowsWhy_AndReloadsThePage()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.Conflict,
+            """{"title":"Finalization Failed: Unknown End Not Accepted","status":409,"detail":"1 acknowledged unknown end(s) are not accepted: 12.","code":"finalize-unknown-end-invalid","executionIDs":[12],"total":1}""");
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Equal(1, reloads()));
+        Assert.Contains("Unknown End Not Accepted", cut.Markup);
+        Assert.Contains("not accepted: 12", cut.Markup);
+        Assert.DoesNotContain("Lock permanently", cut.Markup); // closed: the page reloads with current data
+        Assert.False(StatusWasSet);
+    }
+
+    [Fact]
+    public async Task Lock_AlreadyLockedElsewhere_ShowsTheConflict_AndReloads()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.Conflict,
+            """{"title":"Version Locked","status":409,"detail":"ExperimentVersion 1 is already locked; it cannot be finalized again.","code":"version-locked"}""");
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Equal(1, reloads()));
+        Assert.Contains("already locked", cut.Markup);
+        Assert.False(StatusWasSet);
+    }
+
+    [Fact]
+    public async Task Lock_ARetryableConflict_KeepsTheDialog_AndARetryCanSucceed()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.Conflict,
+            """{"title":"Concurrent Operation Conflict","status":409,"detail":"Another operation held the version.","code":"retryable-conflict","retryable":true}""");
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Contains("Nothing was changed. You can try again.", cut.Markup));
+        Assert.Contains("Lock permanently", cut.Markup);
+        Assert.Equal(0, reloads());
+        Assert.Single(Api.Requests, r => r.Path.EndsWith("/lock")); // never retried by itself
+
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.OK, Json.Version(true, Json.Draft));
+        ConfirmLock(cut); // the operator retries
+
+        cut.WaitForAssertion(() => Assert.Equal(1, reloads()));
+        Assert.True(StatusWasSet);
+    }
+
+    [Fact]
+    public async Task Lock_TimedOutButCommitted_IsConfirmedByReadingTheVersion_NeverReportedAsFailed()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", _ =>
+        {
+            // ShepherdAPI committed, but the answer never arrived: the version now reads as locked.
+            Api.On(HttpMethod.Get, "/api/experiment-versions/1", HttpStatusCode.OK, Json.Version(true, Json.Draft));
+            throw new TaskCanceledException("The request was canceled.", new TimeoutException());
+        });
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Equal(1, reloads()));
+        Assert.Contains("ShepherdAPI confirms the version was locked", cut.Markup);
+        Assert.DoesNotContain("The version was not locked", cut.Markup);
+        Assert.DoesNotContain("Lock outcome unknown", cut.Markup);
+        Assert.DoesNotContain("unreachable", cut.Markup, StringComparison.OrdinalIgnoreCase);
+        Assert.True(StatusWasSet); // D1 still follows a confirmed lock
+        Assert.Single(Api.Requests, r => r.Path.EndsWith("/lock"));
+    }
+
+    [Fact]
+    public async Task Lock_AServerErrorWithNoLock_SaysTheVersionWasNotLocked()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", HttpStatusCode.InternalServerError,
+            """{"title":"Internal Server Error","status":500,"detail":"boom"}""");
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Contains("The version was not locked", cut.Markup));
+        Assert.Contains("nothing was finalized", cut.Markup);
+        Assert.False(StatusWasSet);
+        Assert.Single(Api.Requests, r => r.Path.EndsWith("/lock"));
+    }
+
+    [Fact]
+    public async Task Lock_WhenNeitherLockNorTheCheckAnswers_SaysTheOutcomeIsUnknown()
+    {
+        var (cut, reloads) = await OpenLockDialogAsync();
+        Api.On(HttpMethod.Post, "/api/experiment-versions/1/lock", _ =>
+        {
+            Api.Unreachable = true; // ShepherdAPI is gone: the follow-up read fails too
+            throw new HttpRequestException("connection reset");
+        });
+
+        ConfirmLock(cut);
+
+        cut.WaitForAssertion(() => Assert.Contains("Lock outcome unknown", cut.Markup));
+        Assert.Contains("Reload the page", cut.Markup);
+        Assert.DoesNotContain("confirms the version was locked", cut.Markup);
+        Assert.False(StatusWasSet);
+    }
+
     [Fact]
     public async Task VersionOverview_Lock_WithTwoExecutionsWithoutAnEnd_RequiresBothAcknowledgments()
     {
