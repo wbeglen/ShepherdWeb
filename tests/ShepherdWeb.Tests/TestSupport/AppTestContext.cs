@@ -85,13 +85,14 @@ public abstract class AppTestContext : BunitContext
 
     /// <summary>Serves version 1 with the given lock/status and its (empty unless given) configuration.</summary>
     protected void ServeVersion(bool locked, int statusId, string iterations = "[]", string parameters = "[]",
-        string scoreRules = "[]", string executionsPerIteration = "[]")
+        string scoreRules = "[]", string executionsPerIteration = "[]", string finalizationExceptions = "[]")
     {
         Api.On(HttpMethod.Get, "/api/experiment-versions/1", HttpStatusCode.OK, Json.Version(locked, statusId))
             .On(HttpMethod.Get, "/api/iterations", HttpStatusCode.OK, iterations)
             .On(HttpMethod.Get, "/api/parameters", HttpStatusCode.OK, parameters)
             .On(HttpMethod.Get, "/api/score-rules", HttpStatusCode.OK, scoreRules)
-            .On(HttpMethod.Get, "/api/executions", HttpStatusCode.OK, executionsPerIteration);
+            .On(HttpMethod.Get, "/api/executions", HttpStatusCode.OK, executionsPerIteration)
+            .On(HttpMethod.Get, "/api/experiment-versions/1/finalization-exceptions", HttpStatusCode.OK, finalizationExceptions);
     }
 
     protected async Task<VersionConfiguration> LoadConfigurationAsync() =>
@@ -155,6 +156,10 @@ public static class Json
 
     public const string OneExecutionInProgress =
         """[{"executionID":12,"iterationID":7,"agentID":1,"phaseID":1,"statusID":1,"startUTC":"2026-09-02T09:00:00","endUTC":null,"interventionCount":0,"attemptNumber":1}]""";
+
+    /// <summary>The FinalizationException list accepting the given execution's unknown end (recorded at version 1's lock time).</summary>
+    public static string UnknownEnd(long executionId, string explanation) =>
+        $$"""[{"experimentVersionID":1,"executionID":{{executionId}},"exceptionCode":"end-time-unknown","explanation":{{System.Text.Json.JsonSerializer.Serialize(explanation)}},"recordedUTC":"2026-09-01T12:00:00"}]""";
 
     public const string Agents =
         """[{"agentID":1,"name":"Claude","provider":"Anthropic","defaultModel":"model-x","defaultInterface":"Desktop","active":true}]""";

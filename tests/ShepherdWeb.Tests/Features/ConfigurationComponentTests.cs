@@ -12,6 +12,30 @@ namespace ShepherdWeb.Tests.Features;
 public class ConfigurationComponentTests : AppTestContext
 {
     [Fact]
+    public async Task Loader_ForALockedVersion_LoadsItsFinalizationExceptions()
+    {
+        ServeVersion(locked: true, statusId: Json.Locked, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress,
+            finalizationExceptions: Json.UnknownEnd(12, "Cursor could not report the end time."));
+
+        var config = await LoadConfigurationAsync();
+
+        var exception = Assert.Single(config.Exceptions);
+        Assert.Equal("Cursor could not report the end time.", config.ExceptionFor(config.Executions.Single())!.Explanation);
+        Assert.Equal("end-time-unknown", exception.ExceptionCode);
+    }
+
+    [Fact]
+    public async Task Loader_ForAnUnlockedVersion_MakesNoFinalizationExceptionCall()
+    {
+        ServeVersion(locked: false, statusId: Json.Draft, iterations: Json.OneIteration, executionsPerIteration: Json.OneExecutionInProgress);
+
+        var config = await LoadConfigurationAsync();
+
+        Assert.Empty(config.Exceptions);
+        Assert.DoesNotContain(Api.Requests, r => r.Path.EndsWith("/finalization-exceptions"));
+    }
+
+    [Fact]
     public async Task VersionHeader_WarnsWhenStatusSaysLockedButThereIsNoLock()
     {
         await LoadedReferenceDataAsync();

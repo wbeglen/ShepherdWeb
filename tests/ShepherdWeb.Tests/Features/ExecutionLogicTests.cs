@@ -75,6 +75,25 @@ public class ExecutionRulesTests
         Assert.False(ExecutionRules.CanEditRunFacts(running, locked));
     }
 
+    [Fact]
+    public void EndState_DistinguishesNotRecorded_AcknowledgedUnknown_AndAMissingAcknowledgment()
+    {
+        var ended = new Execution { ExecutionID = 1, EndUTC = DateTime.UtcNow };
+        var acknowledged = new Execution { ExecutionID = 2 };
+        var bare = new Execution { ExecutionID = 3 };
+        VersionConfiguration Config(bool locked, params FinalizationException[] exceptions) => new(
+            new ExperimentVersion { LockedUTC = locked ? DateTime.UtcNow : null }, [], [], [], [ended, acknowledged, bare], exceptions);
+
+        var unlocked = Config(locked: false);
+        Assert.Equal(ExecutionEndState.Ended, ExecutionRules.EndStateOf(ended, unlocked));
+        Assert.Equal(ExecutionEndState.NotRecorded, ExecutionRules.EndStateOf(acknowledged, unlocked)); // not "in progress"
+
+        var locked = Config(locked: true, new FinalizationException { ExecutionID = 2, Explanation = "unknown" });
+        Assert.Equal(ExecutionEndState.Ended, ExecutionRules.EndStateOf(ended, locked));
+        Assert.Equal(ExecutionEndState.UnknownAcknowledged, ExecutionRules.EndStateOf(acknowledged, locked));
+        Assert.Equal(ExecutionEndState.MissingAcknowledgment, ExecutionRules.EndStateOf(bare, locked)); // integrity warning
+    }
+
     [Theory]
     [InlineData(null, "Enter a score")]
     [InlineData("0.99", "between 1 and 10")]
