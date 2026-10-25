@@ -5,9 +5,11 @@
 | Field | Value |
 |---|---|
 | Source | ShepherdAPI's committed `contracts/openapi.json`, copied unchanged |
-| ShepherdAPI commit | `b0125d4d65ebca1c5a055d2bd16c14c945411095` (2026-10-23, branch `issue-7-scorerule-physical-delete`, "Make Version 10 the authoritative database baseline"; database V10, Issues #1–#10) |
-| Verified | 2026-10-23: identical to ShepherdAPI's committed file at that commit, which ShepherdAPI's `OpenApiSnapshotTests` keeps identical to the running API's document |
-| Previous snapshot | `dce802f` (2026-09-28), captured from the running API |
+| ShepherdAPI commit | `78d7b80` (2026-10-25, branch `finalization-exception-unknown-end`, "Make Version 11 the authoritative database baseline"; database V11). The contract last changed in `5dab4ee` (V11: finalization with acknowledged unknown ends). |
+| Verified | 2026-10-25: identical to ShepherdAPI's committed file at that commit, which ShepherdAPI's `OpenApiSnapshotTests` keeps identical to the running API's document |
+| Previous snapshots | `b0125d4` (2026-10-23, V10), `dce802f` (2026-09-28, captured from the running API) |
+
+V11 adds `LockExperimentVersionRequest.unknownEnds`, a declared `400` on the lock endpoint, and `GET /api/experiment-versions/{id}/finalization-exceptions` (on `ExperimentVersionsClient`, which keeps its R8 mapping; a GET returns 200, so the mapping is harmless).
 
 ShepherdAPI's committed `contracts/openapi.json` is guarded by a snapshot test (it fails when the file differs from the generated document), so it is the file to copy.
 
