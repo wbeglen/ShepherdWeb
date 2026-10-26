@@ -63,6 +63,12 @@ h1:focus {
     max-width: 48rem;
 }
 
+/* Tables repeated per group (phase, iteration) size columns from their <col> widths, not their own
+   content, so the columns line up from one group to the next. */
+.table-aligned {
+    table-layout: fixed;
+}
+
 .text-prewrap {
     white-space: pre-wrap;
 }

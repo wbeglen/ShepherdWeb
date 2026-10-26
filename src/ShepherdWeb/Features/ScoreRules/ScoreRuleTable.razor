@@ -17,10 +17,13 @@
 @foreach (var group in Groups())
 {
     <h2 class="h6 mt-3">@group.PhaseName</h2>
-    <table class="table table-sm align-middle">
+    <table class="table table-sm align-middle table-aligned">
+        <colgroup>
+            <col style="width: 12rem" /><col style="width: 7rem" /><col style="width: 6rem" /><col style="width: 5rem" /><col style="width: 5rem" /><col /><col style="width: 6rem" />
+        </colgroup>
         <thead>
             <tr>
-                <th>Category</th><th>Better</th><th class="text-end">Weight %</th><th class="text-end">Min</th><th class="text-end">Max</th><th>Notes</th><th></th>
+                <th>Category</th><th>Better</th><th class="text-end">Weight %</th><th class="text-end">Min</th><th class="text-end">Max</th><th class="ps-4">Notes</th><th></th>
             </tr>
         </thead>
         <tbody>
@@ -32,7 +35,7 @@
                     <td class="text-end">@rule.WeightPercent.ToString("0.##")</td>
                     <td class="text-end">@rule.MinScore</td>
                     <td class="text-end">@rule.MaxScore</td>
-                    <td class="small">@rule.RuleNotes</td>
+                    <td class="small ps-4">@rule.RuleNotes</td>
                     <td class="text-end">
                         @if (!locked)
                         {

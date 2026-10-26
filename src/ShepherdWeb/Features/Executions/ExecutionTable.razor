@@ -1,10 +1,19 @@
 @* A compact table of executions, used by the Executions tab. *@
 @inject ReferenceData ReferenceData
 
-<table class="table table-sm table-hover align-middle">
+@* Fixed column widths keep the per-group tables of the Executions tab aligned; Ended takes the rest. *@
+<table class="table table-sm table-hover align-middle table-aligned">
+    <colgroup>
+        <col style="width: 6rem" />
+        @if (ShowIteration)
+        {
+            <col style="width: 14rem" />
+        }
+        <col style="width: 8rem" /><col style="width: 9rem" /><col style="width: 5rem" /><col style="width: 15rem" /><col /><col style="width: 8rem" />
+    </colgroup>
     <thead>
         <tr>
-            <th style="width: 6rem">Execution</th>
+            <th>Execution</th>
             @if (ShowIteration)
             {
                 <th>Iteration</th>
