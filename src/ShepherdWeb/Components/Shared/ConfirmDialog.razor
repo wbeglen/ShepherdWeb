@@ -5,7 +5,7 @@
 @if (Visible)
 {
     <div class="modal d-block" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
-        <div class="modal-dialog modal-dialog-scrollable" role="document">
+        <div class="modal-dialog modal-dialog-scrollable @DialogClass" role="document">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2 class="modal-title h5" id="confirm-dialog-title">@Title</h2>
@@ -15,7 +15,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" disabled="@Busy" @onclick="OnCancel">Cancel</button>
-                    <button type="button" class="btn @ConfirmClass" disabled="@Busy" @onclick="OnConfirm">
+                    <button type="button" class="btn @ConfirmClass" disabled="@(Busy || !ConfirmEnabled)" @onclick="OnConfirm">
                         @(Busy ? "Working…" : ConfirmText)
                     </button>
                 </div>
@@ -36,6 +36,12 @@
 
     /// <summary>True while the confirmed action runs; disables both buttons.</summary>
     [Parameter] public bool Busy { get; set; }
+
+    /// <summary>False while the body still needs input before the action may be confirmed; disables the confirm button only.</summary>
+    [Parameter] public bool ConfirmEnabled { get; set; } = true;
+
+    /// <summary>Extra Bootstrap modal-dialog class, e.g. "modal-lg" for a dialog with form fields.</summary>
+    [Parameter] public string? DialogClass { get; set; }
 
     [Parameter] public EventCallback OnConfirm { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }

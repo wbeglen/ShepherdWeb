@@ -4,6 +4,10 @@
 @inject IOptions<ConventionsOptions> Conventions
 
 <ProblemDisplay Problem="problem" />
+@if (lockNotice is not null)
+{
+    <div class="alert alert-info" role="status">@lockNotice</div>
+}
 
 <dl class="row mb-4">
     <dt class="col-sm-3">Effective</dt>
@@ -11,7 +15,7 @@
     <dt class="col-sm-3">Locked</dt>
     <dd class="col-sm-9"><UtcTimestamp Value="Version.LockedUTC" Missing="not locked" /></dd>
     <dt class="col-sm-3">Executions</dt>
-    <dd class="col-sm-9">@Configuration.ExecutionCount (@InProgressCount in progress)</dd>
+    <dd class="col-sm-9">@Configuration.ExecutionCount@ExecutionEndSummary</dd>
     <dt class="col-sm-3">Description</dt>
     <dd class="col-sm-9 text-prewrap">@Version.Description</dd>
 </dl>
@@ -24,12 +28,39 @@
     <a class="btn btn-outline-primary" href="versions/@Version.ExperimentVersionID/review">Review configuration</a>
     @if (!VersionLifecycle.IsLocked(Version))
     {
-        <button class="btn btn-danger ms-auto" disabled="@(lockStatus is null)" @onclick="() => confirmingLock = true">Lock version…</button>
+        <button class="btn btn-danger ms-auto" @onclick="OpenLock">Lock version…</button>
     }
 </div>
-@if (!VersionLifecycle.IsLocked(Version) && lockStatus is null)
+@if (!VersionLifecycle.IsLocked(Version) && NoEndCount > 0)
 {
-    <p class="text-danger small">There is no “@Conventions.Value.LockedStatusName” status, so the version cannot be locked. Create it under Reference data.</p>
+    @* ShepherdAPI V11 finalizes an execution without EndUTC only when its unknown end is acknowledged (owner decision W2). *@
+    <p class="text-secondary small">
+        @NoEndCount execution@(NoEndCount == 1 ? " has" : "s have") no recorded end time. End @(NoEndCount == 1 ? "it" : "them") first, or
+        acknowledge @(NoEndCount == 1 ? "its end time" : "each end time") as unknown when locking; it can then never be recorded.
+    </p>
+}
+
+@* The exceptions accepted when this version was finalized (ShepherdAPI V11): permanent, read-only. *@
+@if (Configuration.Exceptions.Count > 0)
+{
+    <section class="mb-4" aria-label="Finalization exceptions">
+        <h2 class="h6">Finalization exceptions</h2>
+        <p class="small text-secondary">Accepted when this version was finalized. These records are permanent.</p>
+        <table class="table table-sm align-top">
+            <thead><tr><th style="width: 7rem">Execution</th><th style="width: 14rem">Exception</th><th>Explanation</th><th style="width: 12rem">Accepted</th></tr></thead>
+            <tbody>
+                @foreach (var x in Configuration.Exceptions)
+                {
+                    <tr>
+                        <td><a href="executions/@x.ExecutionID">#@x.ExecutionID</a></td>
+                        <td>@(x.ExceptionCode == "end-time-unknown" ? "End time unknown — acknowledged" : x.ExceptionCode)</td>
+                        <td class="text-prewrap">@x.Explanation</td>
+                        <td><UtcTimestamp Value="x.RecordedUTC" /></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
 }
 
 <section class="form-narrow">
@@ -52,24 +83,72 @@
         }
         else
         {
-            <text>“@Conventions.Value.LockedStatusName” is set only by the Lock action, together with the lock timestamp.</text>
+            <text>“@Conventions.Value.LockedStatusName” is set only by the Lock action, right after the version is locked.</text>
         }
     </div>
 </section>
 
-@* Lock is the final immutability boundary (docs/ARCHITECTURE.md §3 rule 4, revision 4). *@
+@* Lock is the final immutability boundary (docs/ARCHITECTURE.md §3 rule 4, revision 4). ShepherdAPI's lock
+   runs finalization: it checks the version is complete, snapshots every score and sets LockedUTC, or
+   changes nothing and says why (finalize-*). It no longer sets the status, so ShepherdWeb sets
+   "Locked" in a second call (owner decision D1); LockedUTC stays authoritative. Since ShepherdAPI V11 an
+   execution without an end time is accepted only when acknowledged here, one by one, with an explanation
+   (owner decision W2); each becomes a permanent FinalizationException committed with the lock. *@
 <ConfirmDialog Visible="confirmingLock" Title="Lock this version?" ConfirmText="Lock permanently" ConfirmClass="btn-danger"
-               Busy="saving" OnConfirm="LockAsync" OnCancel="() => confirmingLock = false">
+               DialogClass="@(lockForm?.UnknownEnds.Count > 0 ? "modal-lg" : null)"
+               Busy="saving" ConfirmEnabled="@(lockForm?.CanSubmit ?? false)" OnConfirm="LockAsync" OnCancel="CancelLock">
     <p><strong>@Version.Name @Version.VersionLabel</strong></p>
+    @* Problems the operator can fix here (a malformed request, a retryable conflict) keep the dialog and its input. *@
+    <ProblemDisplay Problem="lockProblem" />
+    @if (lockForm is { UnknownEnds.Count: > 0 })
+    {
+        <section class="border border-warning rounded p-3 mb-3" aria-label="Executions without a recorded end time">
+            <h3 class="h6">Executions without a recorded end time</h3>
+            <p class="small">
+                Each must be acknowledged before locking. An acknowledged execution's end time can <strong>never be recorded afterwards</strong>,
+                and the explanation becomes a <strong>permanent</strong> part of the record. If an execution's end time is known, cancel and
+                record it on the execution's page instead.
+            </p>
+            @foreach (var u in lockForm.UnknownEnds)
+            {
+                var e = u.Execution;
+                <div class="border-top pt-2 mt-2">
+                    <div class="small">
+                        <a href="executions/@e.ExecutionID" target="_blank" rel="noopener">Execution #@e.ExecutionID</a> ·
+                        @(Configuration.IterationOf(e)?.IterationLabel) · @ReferenceData.AgentName(e.AgentID) · @ReferenceData.PhaseName(e.PhaseID) ·
+                        started <UtcTimestamp Value="e.StartUTC" />
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(e.OutcomeNotes))
+                    {
+                        <div class="small text-secondary text-prewrap">Outcome notes: @e.OutcomeNotes</div>
+                    }
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox" id="ack-@e.ExecutionID" @bind="u.Acknowledged" disabled="@saving" />
+                        <label class="form-check-label" for="ack-@e.ExecutionID">End time is unknown; finalize without it</label>
+                    </div>
+                    <label class="form-label small mt-1" for="why-@e.ExecutionID">Explanation (required, permanent)</label>
+                    <textarea class="form-control form-control-sm" id="why-@e.ExecutionID" rows="3" maxlength="@LockRequestForm.ExplanationMaxLength"
+                              @bind="u.Explanation" @bind:event="oninput" disabled="@saving"></textarea>
+                    <div class="d-flex justify-content-between small">
+                        <span class="text-danger">@u.Problem</span>
+                        <span class="text-secondary">@u.Explanation.Length / @LockRequestForm.ExplanationMaxLength</span>
+                    </div>
+                </div>
+            }
+        </section>
+    }
     <ul>
         <li>@Configuration.Iterations.Count iterations, @Configuration.ExecutionCount executions</li>
-        @if (InProgressCount > 0)
+        <li>ShepherdAPI first checks that the version is complete (every execution ended or acknowledged above, every execution scored, rule weights total 100 per phase). If not, nothing changes and it says why.</li>
+        <li>Every score is copied into a permanent snapshot.</li>
+        @if (lockStatus is not null)
         {
-            <li class="text-danger">
-                @InProgressCount execution@(InProgressCount == 1 ? " is" : "s are") still in progress. After locking, they can never be ended or scored.
-            </li>
+            <li>Status is then set to “@lockStatus.Name”.</li>
         }
-        <li>Status becomes “@Conventions.Value.LockedStatusName”.</li>
+        else
+        {
+            <li class="text-warning-emphasis">There is no “@Conventions.Value.LockedStatusName” status, so the status will not change. Create it under Reference data.</li>
+        }
     </ul>
     <p class="mb-0">
         Everything becomes permanent: configuration, executions, artifacts, scores and evidence. No further executions can be started.
@@ -82,7 +161,45 @@
     [Parameter] public EventCallback OnChanged { get; set; }
 
     private ShepherdApi.ExperimentVersion Version => Configuration.Version;
-    private int InProgressCount => Configuration.Executions.Count(e => e.EndUTC is null);
+    private int NoEndCount => Configuration.Executions.Count(e => e.EndUTC is null);
+    private LockRequestForm? lockForm;
+
+    private ApiProblem? lockProblem;
+    private string? lockNotice;
+
+    // A fresh form each time: the dialog always reflects the configuration as last loaded.
+    private void OpenLock()
+    {
+        problem = null;
+        lockProblem = null;
+        lockNotice = null;
+        lockForm = LockRequestForm.For(Configuration);
+        confirmingLock = true;
+    }
+
+    private void CancelLock()
+    {
+        lockProblem = null;
+        confirmingLock = false;
+    }
+
+    // Refusals that mean the page is out of date: another session changed or locked the version.
+    private static readonly HashSet<string> StaleCodes = ["finalize-unknown-end-invalid", "finalize-execution-not-ended", "version-locked"];
+
+    // e.g. " (1 end time not recorded)" before the lock, " (1 end time unknown — acknowledged)" after it.
+    private string ExecutionEndSummary
+    {
+        get
+        {
+            var parts = Configuration.Executions
+                .Select(e => ExecutionRules.EndStateOf(e, Configuration))
+                .Where(s => s != ExecutionEndState.Ended)
+                .GroupBy(s => s).OrderBy(g => g.Key)
+                .Select(g => $"{g.Count()} {ExecutionRules.EndLabel(g.Key)!.ToLowerInvariant()}")
+                .ToList();
+            return parts.Count == 0 ? "" : $" ({string.Join(", ", parts)})";
+        }
+    }
     private IReadOnlyList<ShepherdApi.Status> offerable = [];
     private ShepherdApi.Status? lockStatus;
     private int selectedStatusId;
@@ -125,23 +242,133 @@
         }
     }
 
+    /// <summary>
+    /// Finalizes the version (revision 4.4). The page shows the version as locked only once ShepherdAPI has confirmed it:
+    /// a 200 from Lock, or, when the response was lost, a fresh read showing LockedUTC. Lock is never retried
+    /// automatically. Refusals keep the dialog only when the operator can act on them there (W3, M5).
+    /// </summary>
     private async Task LockAsync()
     {
         saving = true;
         problem = null;
+        lockProblem = null;
+        lockNotice = null;
+        var closeDialog = true;
+        var reload = false;
         try
         {
-            await Versions.LockAsync(Version.ExperimentVersionID, new ShepherdApi.LockExperimentVersionRequest { StatusID = lockStatus!.StatusID });
-            await OnChanged.InvokeAsync(); // Reload: the whole page becomes read-only.
-        }
-        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
-        {
-            problem = Errors.Map(ex);
+            ShepherdApi.ExperimentVersion? locked = null;
+            try
+            {
+                // No StatusID (ShepherdAPI ignores it); the acknowledged unknown ends, explanations exactly as entered.
+                locked = await Versions.LockAsync(Version.ExperimentVersionID, lockForm!.ToRequest());
+            }
+            catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+            {
+                var failure = Errors.Map(ex);
+                if (failure.Kind == ApiProblemKind.Validation)
+                {
+                    lockProblem = failure; // a malformed request: correct it in the dialog
+                    closeDialog = false;
+                    return;
+                }
+
+                if (failure.Retryable)
+                {
+                    lockProblem = failure with { Detail = $"{failure.Detail} Nothing was changed. You can try again." };
+                    closeDialog = false;
+                    return;
+                }
+
+                if (failure.Kind is ApiProblemKind.Unreachable or ApiProblemKind.ServerError or ApiProblemKind.Unexpected)
+                {
+                    // The request may have been committed even though no answer arrived: find out instead of guessing.
+                    locked = await ConfirmOutcomeAsync(failure);
+                    if (locked is null)
+                    {
+                        reload = true;
+                        return;
+                    }
+
+                    lockNotice = $"The answer to Lock was lost, but ShepherdAPI confirms the version was locked at {Utc.Format(locked.LockedUTC!.Value)}.";
+                }
+                else
+                {
+                    // e.g. "Finalization Failed: Execution Without Observation", with the IDs in Detail.
+                    problem = failure;
+                    reload = failure.Code is { } code && StaleCodes.Contains(code);
+                    return;
+                }
+            }
+
+            // Finalization succeeded and is permanent. Synchronize the status; never retry the lock.
+            if (lockStatus is not null && locked.StatusID != lockStatus.StatusID)
+            {
+                try
+                {
+                    await Versions.StatusAsync(Version.ExperimentVersionID, new ShepherdApi.SetExperimentVersionStatusRequest { StatusID = lockStatus.StatusID });
+                }
+                catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+                {
+                    var failure = Errors.Map(ex);
+                    problem = failure with
+                    {
+                        Title = "Locked, but the status was not updated",
+                        Detail = $"Finalization succeeded: this version was locked at {Utc.Format(locked.LockedUTC ?? Utc.Now)} and that cannot be undone. " +
+                                 $"Setting its status to “{lockStatus.Name}” failed ({failure.Title}: {failure.Detail}). " +
+                                 $"Use Change status to set it.",
+                    };
+                }
+            }
+
+            reload = true; // the whole page becomes read-only
         }
         finally
         {
             saving = false;
-            confirmingLock = false;
+            if (closeDialog)
+            {
+                confirmingLock = false;
+            }
+
+            // Here, not after the try: the refusal paths return early and must still reload.
+            if (reload)
+            {
+                await OnChanged.InvokeAsync();
+            }
         }
+    }
+
+    /// <summary>
+    /// After Lock failed without a definite answer (no response, a timeout, a server error), reads the version to learn
+    /// what actually happened. Returns it when it is locked; otherwise reports the outcome and returns null.
+    /// </summary>
+    private async Task<ShepherdApi.ExperimentVersion?> ConfirmOutcomeAsync(ApiProblem failure)
+    {
+        try
+        {
+            var current = await Versions.ExperimentVersionsGetAsync(Version.ExperimentVersionID);
+            if (VersionLifecycle.IsLocked(current))
+            {
+                return current;
+            }
+
+            problem = failure with
+            {
+                Title = "The version was not locked",
+                Detail = $"Lock did not complete ({failure.Title}: {failure.Detail}). ShepherdAPI confirms the version is still unlocked; nothing was finalized.",
+            };
+        }
+        catch (Exception ex) when (ApiErrorMapper.IsApiFailure(ex))
+        {
+            problem = failure with
+            {
+                Title = "Lock outcome unknown",
+                Detail = $"Lock did not answer ({failure.Title}: {failure.Detail}), and the version could not be read to confirm whether it was locked. " +
+                         "Reload the page to see its state before trying again.",
+            };
+        }
+
+        return null;
     }
 }

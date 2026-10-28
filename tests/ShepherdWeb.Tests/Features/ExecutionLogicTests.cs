@@ -75,6 +75,25 @@ public class ExecutionRulesTests
         Assert.False(ExecutionRules.CanEditRunFacts(running, locked));
     }
 
+    [Fact]
+    public void EndState_DistinguishesNotRecorded_AcknowledgedUnknown_AndAMissingAcknowledgment()
+    {
+        var ended = new Execution { ExecutionID = 1, EndUTC = DateTime.UtcNow };
+        var acknowledged = new Execution { ExecutionID = 2 };
+        var bare = new Execution { ExecutionID = 3 };
+        VersionConfiguration Config(bool locked, params FinalizationException[] exceptions) => new(
+            new ExperimentVersion { LockedUTC = locked ? DateTime.UtcNow : null }, [], [], [], [ended, acknowledged, bare], exceptions);
+
+        var unlocked = Config(locked: false);
+        Assert.Equal(ExecutionEndState.Ended, ExecutionRules.EndStateOf(ended, unlocked));
+        Assert.Equal(ExecutionEndState.NotRecorded, ExecutionRules.EndStateOf(acknowledged, unlocked)); // not "in progress"
+
+        var locked = Config(locked: true, new FinalizationException { ExecutionID = 2, Explanation = "unknown" });
+        Assert.Equal(ExecutionEndState.Ended, ExecutionRules.EndStateOf(ended, locked));
+        Assert.Equal(ExecutionEndState.UnknownAcknowledged, ExecutionRules.EndStateOf(acknowledged, locked));
+        Assert.Equal(ExecutionEndState.MissingAcknowledgment, ExecutionRules.EndStateOf(bare, locked)); // integrity warning
+    }
+
     [Theory]
     [InlineData(null, "Enter a score")]
     [InlineData("0.99", "between 1 and 10")]
@@ -98,16 +117,17 @@ public class ExecutionRulesTests
     }
 
     [Fact]
-    public void RulesFor_UsesTheExecutionsPhase_AndSkipsRetiredRules()
+    public void RulesFor_UsesEveryRuleOfTheExecutionsPhase()
     {
         ScoreRule[] rules =
         [
-            new() { ScoreRuleID = 1, PhaseID = 1, RowState = "A" },
-            new() { ScoreRuleID = 2, PhaseID = 2, RowState = "A" },
-            new() { ScoreRuleID = 3, PhaseID = 1, RowState = "D" },
+            new() { ScoreRuleID = 1, PhaseID = 1, Active = true },
+            new() { ScoreRuleID = 2, PhaseID = 2, Active = true },
+            new() { ScoreRuleID = 3, PhaseID = 1, Active = false },
         ];
 
-        Assert.Equal([1], ExecutionRules.RulesFor(new Execution { PhaseID = 1 }, rules).Select(r => r.ScoreRuleID));
+        // ScoreRule.Active is ignored, as it is by ShepherdAPI (Issue #7).
+        Assert.Equal([1, 3], ExecutionRules.RulesFor(new Execution { PhaseID = 1 }, rules).Select(r => r.ScoreRuleID));
     }
 }
 

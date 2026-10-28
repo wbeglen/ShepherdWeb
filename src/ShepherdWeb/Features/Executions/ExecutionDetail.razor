@@ -18,13 +18,20 @@
 
     <div class="d-flex align-items-baseline gap-2 mb-2">
         <h2 class="h5 mb-0">Execution #@e.ExecutionID</h2>
-        @if (v.HasEnded)
+        @switch (v.EndState)
         {
-            <span class="badge text-bg-secondary">ended</span>
-        }
-        else
-        {
-            <span class="badge text-bg-primary">in progress</span>
+            case ExecutionEndState.Ended:
+                <span class="badge text-bg-secondary">ended</span>
+                break;
+            case ExecutionEndState.NotRecorded:
+                <span class="badge text-bg-primary">end time not recorded</span>
+                break;
+            case ExecutionEndState.UnknownAcknowledged:
+                <span class="badge text-bg-secondary">end time unknown — acknowledged</span>
+                break;
+            default:
+                <span class="badge text-bg-danger">no end time — not acknowledged</span>
+                break;
         }
         @if (e.InterventionCount > 0)
         {
@@ -40,7 +47,7 @@
         <dt class="col-sm-2">Attempt</dt><dd class="col-sm-10">@e.AttemptNumber</dd>
         <dt class="col-sm-2">Model / interface</dt><dd class="col-sm-10">@(e.ModelUsed ?? "—") / @(e.InterfaceUsed ?? "—")</dd>
         <dt class="col-sm-2">Started</dt><dd class="col-sm-10"><UtcTimestamp Value="e.StartUTC" /></dd>
-        <dt class="col-sm-2">Ended</dt><dd class="col-sm-10"><UtcTimestamp Value="e.EndUTC" Missing="in progress" /></dd>
+        <dt class="col-sm-2">Ended</dt><dd class="col-sm-10"><UtcTimestamp Value="e.EndUTC" Missing="@(ExecutionRules.EndLabel(v.EndState) ?? "")" /></dd>
         @if (!string.IsNullOrWhiteSpace(e.OutcomeNotes))
         {
             <dt class="col-sm-2">Outcome notes</dt><dd class="col-sm-10 text-prewrap">@e.OutcomeNotes</dd>
@@ -50,6 +57,27 @@
             <dt class="col-sm-2">Artifact URI <span class="badge text-bg-light">legacy</span></dt><dd class="col-sm-10">@e.ArtifactURI</dd>
         }
     </dl>
+
+    @* ---- End time accepted as unknown at finalization (ShepherdAPI V11), or missing without that record ---- *@
+    @if (v.FinalizationException is { } accepted)
+    {
+        <section class="alert alert-secondary mb-4" aria-label="Finalization exception">
+            <h3 class="h6">End time unknown — acknowledged</h3>
+            <p class="small mb-2">
+                Accepted when the version was finalized, <UtcTimestamp Value="accepted.RecordedUTC" />. This record is permanent; the end time
+                can no longer be entered.
+            </p>
+            <div class="small text-secondary">Explanation</div>
+            <div class="text-prewrap">@accepted.Explanation</div>
+        </section>
+    }
+    else if (v.EndState == ExecutionEndState.MissingAcknowledgment)
+    {
+        <div class="alert alert-warning mb-4" role="alert">
+            <strong>Integrity warning:</strong> this version is locked, but this execution has no end time and no finalization exception
+            accepting that. ShepherdAPI does not allow this state; check the database with the post-deployment audit.
+        </div>
+    }
 
     @* ---- Start prompt (AD-8: identified by provenance, verified before release) ---- *@
     <section class="mb-4">
@@ -171,7 +199,7 @@
         }
     </section>
 
-    @* ---- In progress: hands off ---- *@
+    @* ---- No end recorded, version not locked: hands off while it runs ---- *@
     @if (v.CanEditRunFacts)
     {
         @if (mode == Mode.Ending || mode == Mode.Editing)
@@ -194,7 +222,7 @@
         else
         {
             <p class="text-secondary">
-                Hands off: the agent is running. When it finishes, record the end.
+                No end time is recorded. If the agent is still running, keep hands off; when it finishes, record the end.
             </p>
             <div class="d-flex flex-wrap gap-2 mb-4">
                 <button class="btn btn-primary" @onclick="() => mode = Mode.Ending">Execution ended…</button>
@@ -215,22 +243,19 @@
             </div>
         }
     }
-    else if (!v.HasEnded)
-    {
-        <div class="alert alert-secondary">The version was locked while this execution was in progress. It can no longer be ended or scored.</div>
-    }
-
-    @* ---- Ended: evaluation ---- *@
-    @if (v.HasEnded)
-    {
-        <section class="mb-4">
-            <div class="d-flex align-items-baseline gap-3">
-                <h3 class="h6 mb-2">Evaluation</h3>
-                <a class="small" href="executions/@e.ExecutionID/scoring">@(v.CanEvaluate ? "Score this execution" : "View scores")</a>
-            </div>
-            <ArtifactList ExecutionId="e.ExecutionID" Artifacts="v.EvaluationArtifacts" CanUpload="v.CanEvaluate" OnChanged="LoadAsync" />
-        </section>
-    }
+    @* ---- Evaluation: existing scores and artifacts are always viewable. Adding them follows the lock and the
+            scoring-after-the-end rule (A5): only for an ended execution on an unlocked version. ---- *@
+    <section class="mb-4">
+        <div class="d-flex align-items-baseline gap-3">
+            <h3 class="h6 mb-2">Evaluation</h3>
+            <a class="small" href="executions/@e.ExecutionID/scoring">@(v.CanEvaluate ? "Score this execution" : "View scores")</a>
+        </div>
+        @if (!v.HasEnded && !VersionLifecycle.IsLocked(v.Version))
+        {
+            <p class="small text-secondary">Scores and evaluation artifacts can be added once the end time is recorded.</p>
+        }
+        <ArtifactList ExecutionId="e.ExecutionID" Artifacts="v.EvaluationArtifacts" CanUpload="v.CanEvaluate" OnChanged="LoadAsync" />
+    </section>
 }
 else if (problem is null)
 {

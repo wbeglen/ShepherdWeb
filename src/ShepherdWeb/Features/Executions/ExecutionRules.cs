@@ -15,6 +15,27 @@ public static class ExecutionRules
     public static bool HasEnded(Execution execution) => execution.EndUTC is not null;
 
     /// <summary>
+    /// What an execution's end time means (revision 4.4). A NULL EndUTC is "not recorded" while the version is
+    /// unlocked: the agent may still be running, or the end may simply not have been entered. After finalization it
+    /// is either an end time acknowledged as unknown (ShepherdAPI V11 FinalizationException) or, without such a
+    /// record, an integrity problem.
+    /// </summary>
+    public static ExecutionEndState EndStateOf(Execution execution, VersionConfiguration configuration) =>
+        HasEnded(execution) ? ExecutionEndState.Ended
+        : !VersionLifecycle.IsLocked(configuration.Version) ? ExecutionEndState.NotRecorded
+        : configuration.ExceptionFor(execution) is not null ? ExecutionEndState.UnknownAcknowledged
+        : ExecutionEndState.MissingAcknowledgment;
+
+    /// <summary>How a missing end time is shown, by state; null when the execution has ended (its EndUTC is shown).</summary>
+    public static string? EndLabel(ExecutionEndState state) => state switch
+    {
+        ExecutionEndState.NotRecorded => "End time not recorded",
+        ExecutionEndState.UnknownAcknowledged => "End time unknown — acknowledged",
+        ExecutionEndState.MissingAcknowledgment => "No end time — not acknowledged",
+        _ => null,
+    };
+
+    /// <summary>
     /// True when the prompt delivered at the start of an execution is not the iteration's own prompt
     /// (AD-8, revision: execution-specific prompt). Exact, ordinal comparison, because the delivered
     /// prompt is byte-exact evidence: a prompt that is identical to the iteration's is simply the
@@ -65,9 +86,9 @@ public static class ExecutionRules
             .DefaultIfEmpty(0)
             .Max() + 1;
 
-    /// <summary>The score rules an execution is scored against: non-retired rules for its phase.</summary>
+    /// <summary>The score rules an execution is scored against: every rule for its phase (ShepherdAPI Issue #7).</summary>
     public static IReadOnlyList<ScoreRule> RulesFor(Execution execution, IEnumerable<ScoreRule> versionRules) =>
-        versionRules.Where(r => r.PhaseID == execution.PhaseID && r.RowState != "D").ToList();
+        versionRules.Where(r => r.PhaseID == execution.PhaseID).ToList();
 
     /// <summary>Why a score is not acceptable for a rule, or null. ShepherdAPI does not check this yet (A3).</summary>
     public static string? ScoreProblem(decimal? score, ScoreRule rule)
@@ -87,4 +108,20 @@ public static class ExecutionRules
 
     private static bool Is(string value, string conventionName) =>
         string.Equals(value, conventionName, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>An execution's end-time state (<see cref="ExecutionRules.EndStateOf"/>).</summary>
+public enum ExecutionEndState
+{
+    /// <summary>EndUTC is set.</summary>
+    Ended,
+
+    /// <summary>No EndUTC and the version is not locked: the end has not been recorded (yet).</summary>
+    NotRecorded,
+
+    /// <summary>No EndUTC, the version is locked, and finalization accepted the unknown end with an explanation.</summary>
+    UnknownAcknowledged,
+
+    /// <summary>No EndUTC on a locked version with no FinalizationException: an integrity problem, never valid.</summary>
+    MissingAcknowledgment,
 }

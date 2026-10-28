@@ -19,6 +19,10 @@ public sealed record ExecutionView(
     public bool HasEnded => ExecutionRules.HasEnded(Execution);
     public bool CanEditRunFacts => ExecutionRules.CanEditRunFacts(Execution, Version);
     public bool CanEvaluate => ExecutionRules.CanEvaluate(Execution, Version);
+    public ExecutionEndState EndState => ExecutionRules.EndStateOf(Execution, Configuration);
+
+    /// <summary>The unknown-end exception accepted for this execution at finalization (ShepherdAPI V11), or null.</summary>
+    public FinalizationException? FinalizationException => Configuration.ExceptionFor(Execution);
 
     /// <summary>All delivered-prompt artifacts, in the order received (for listing only; never used to decide a role).</summary>
     public IReadOnlyList<Artifact> DeliveredPrompts =>
